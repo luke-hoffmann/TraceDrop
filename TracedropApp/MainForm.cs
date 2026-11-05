@@ -53,12 +53,12 @@ sealed partial class MainForm : Form
 
     static string ToolHint(EditTool tool) => tool switch
     {
-        EditTool.Select => "Click a line to select it (Shift adds), or drag a box. Delete removes it for good. Double-click to edit its points.",
-        EditTool.Points => "Click a line to edit its points. Drag points and handles; click the line to add a point. Alt-click: corner ↔ curve.",
-        EditTool.Pen => "Click for corners, drag for curves. Click the first point to close; Enter or right-click finishes; Esc cancels.",
-        EditTool.Find => "Mark where lines are missing: the AI looks again there, zoomed in. Scroll over an area for more or fewer lines.",
-        EditTool.Erase => "Mark where there should be no lines. Right-click an area to remove it. [ ] or Ctrl+scroll sizes it.",
-        _ => "Drag to move around. Scroll to zoom; double-click to fit. Hold Space with any tool to pan."
+        EditTool.Select => "Click or box-select lines (Shift adds). Delete removes them for good; double-click edits points.",
+        EditTool.Points => "Click a line, then drag its points and handles. Click the line to add a point; Alt-click: corner \u2194 curve.",
+        EditTool.Pen => "Click: corner. Drag: curve. Click the first point to close; Enter finishes, Esc cancels.",
+        EditTool.Find => "Mark where lines are missing: the AI looks closer there. Scroll over an area for more or fewer lines.",
+        EditTool.Erase => "Mark where there should be no lines. Right-click an area to remove it; [ ] sizes the brush.",
+        _ => "Drag to pan, scroll to zoom, double-click to fit. Space pans with any tool."
     };
 
     public MainForm(string exePath, string[] startupFiles)
@@ -222,11 +222,20 @@ sealed partial class MainForm : Form
         var infoRow = new Panel { Dock = DockStyle.Bottom, Height = 38 };
         infoRow.Controls.Add(_statsLabel);
 
+        // What the current tool does, on its own line under the canvas.
+        _toolHint.AutoSize = false;
+        _toolHint.Dock = DockStyle.Bottom;
+        _toolHint.Height = 26;
+        _toolHint.TextAlign = ContentAlignment.BottomLeft;
+        _toolHint.AutoEllipsis = true;
+        _toolHint.ForeColor = Palette.Ink;
+
         var spacer = new Panel { Dock = DockStyle.Top, Height = 6 };
         pane.Controls.Add(card);
         pane.Controls.Add(_optionsBar);
         pane.Controls.Add(spacer);
         pane.Controls.Add(topRow);
+        pane.Controls.Add(_toolHint);
         pane.Controls.Add(infoRow);
         return pane;
     }
@@ -249,12 +258,6 @@ sealed partial class MainForm : Form
         _deleteButton.Click += (_, _) => { _preview.DeleteSelection(); _preview.Focus(); };
         _keepOnlyButton.Click += (_, _) => { _preview.KeepOnlySelection(); _preview.Focus(); };
 
-        _toolHint.AutoSize = false;
-        _toolHint.Dock = DockStyle.Fill;
-        _toolHint.TextAlign = ContentAlignment.MiddleLeft;
-        _toolHint.Padding = new Padding(10, 0, 6, 0);
-        _toolHint.AutoEllipsis = true;
-
         _clearEditsLink.Text = "Clear edits";
         _clearEditsLink.LinkArea = new LinkArea(0, _clearEditsLink.Text.Length);
         _clearEditsLink.Font = UiFonts.Small;
@@ -272,7 +275,6 @@ sealed partial class MainForm : Form
         _undoButton.Click += (_, _) => UndoEdit();
         _redoButton.Click += (_, _) => RedoEdit();
 
-        _optionsBar.Controls.Add(_toolHint);
         _optionsBar.Controls.Add(selectActions);
         _optionsBar.Controls.Add(_areaShape);
         // Docked right: the last added sits furthest right, so this reads Undo, Redo, Clear edits.
@@ -287,7 +289,15 @@ sealed partial class MainForm : Form
     {
         var tool = _preview.Tool;
         _palette.Selected = tool;
-        _toolHint.Text = ToolHint(tool);
+        _toolHint.Text = (tool switch
+        {
+            EditTool.Select => "Select (V)",
+            EditTool.Points => "Edit points (A)",
+            EditTool.Pen => "Pen (P)",
+            EditTool.Find => "Find lines here (F)",
+            EditTool.Erase => "Erase lines here (E)",
+            _ => "Hand (H)"
+        }) + ":  " + ToolHint(tool);
         _areaShape.Visible = tool is EditTool.Find or EditTool.Erase;
         var selectActions = _optionsBar.Controls["selectActions"];
         if (selectActions is not null) selectActions.Visible = tool == EditTool.Select;

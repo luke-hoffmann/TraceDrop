@@ -430,6 +430,7 @@ sealed partial class MainForm
     {
         _listHint.Visible = _items.Count > 0;
         _optionsBar.Visible = _items.Count > 0;
+        _toolHint.Visible = _items.Count > 0;
         _palette.Visible = _items.Count > 0;
         if (_items.Count == 0) ShowItem(null);
         Text = _items.Count > 0 ? $"Tracedrop ({_items.Count})" : "Tracedrop";
