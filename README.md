@@ -1,3 +1,5 @@
+<img src="docs/logo.png" width="96" align="right" alt="Tracedrop logo: a little generator drawn in outline">
+
 # Tracedrop
 
 Turn any picture into clean vector outlines (DXF, SVG, PDF) on your own PC, with a live preview. Drop in

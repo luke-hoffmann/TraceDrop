@@ -32,7 +32,8 @@ public static class Presets
             new TraceSettings
             {
                 Mode = TraceMode.LineArt, Detail = 55, Threshold = 50, Smoothness = 55, CornerSharpness = 50,
-                Strokes = StrokeStyle.Centerline, Curves = CurveStyle.LinesAndArcs, LocalContrast = 30, Despeckle = 1
+                Strokes = StrokeStyle.Centerline, Curves = CurveStyle.LinesAndArcs, LocalContrast = 30, Despeckle = 1,
+                UseAiLineArt = false
             }, true),
 
         new Preset("Face line drawing", "A clean pen portrait of a face for engraving.",

@@ -37,6 +37,7 @@ sealed partial class MainForm
     readonly ToggleRow _fillHoles = new("Fill holes", false, "Keep outer outlines only");
     readonly ToggleRow _keepLargest = new("Largest shape only");
     readonly ToggleRow _aiEdges = new("AI edges (TEED)", true, "Off = classic Canny edges");
+    readonly ToggleRow _aiLineArt = new("AI line drawing", true, "Best for photos; off for sketches");
 
     readonly SectionHeader _outputHeader = new("Output");
     readonly Segmented _curves = new("Curves", "Lines & arcs", "Splines", "Polylines");
@@ -95,7 +96,7 @@ sealed partial class MainForm
 
         var main = new Control[] { presetTitle, presetRow, _presetNote, _mode, _modeNote, _detail, _threshold, _autoThreshold, _colors, _smoothness };
         var prepare = new Control[] { _blur, _smoothTexture, _despeckle, _contrast, _localContrast, _brightness, _invert, _isolate };
-        var clean = new Control[] { _closeGaps, _fillHoles, _keepLargest, _aiEdges };
+        var clean = new Control[] { _closeGaps, _fillHoles, _keepLargest, _aiEdges, _aiLineArt };
         var output = new Control[] { _curves, _corners, _snapCircles, _strokes, _strokeWidth, _size, _offset, _units, _resolution, _formatDxf, _formatSvg, _formatPdf, _useGpu };
 
         _settingsStack.SuspendLayout();
@@ -121,7 +122,7 @@ sealed partial class MainForm
         // Every control feeds the same handler; it rebuilds settings from the UI.
         foreach (var slider in new[] { _detail, _threshold, _colors, _smoothness, _blur, _smoothTexture, _despeckle, _contrast, _localContrast, _brightness, _closeGaps, _corners, _strokeWidth })
             slider.ValueChanged += (_, _) => OnUiChanged();
-        foreach (var toggle in new[] { _autoThreshold, _invert, _isolate, _fillHoles, _keepLargest, _aiEdges, _snapCircles })
+        foreach (var toggle in new[] { _autoThreshold, _invert, _isolate, _fillHoles, _keepLargest, _aiEdges, _aiLineArt, _snapCircles })
             toggle.CheckedChanged += (_, _) => OnUiChanged();
         foreach (var seg in new[] { _mode, _curves, _strokes, _units })
             seg.SelectedIndexChanged += (_, _) => OnUiChanged();
@@ -170,6 +171,7 @@ sealed partial class MainForm
         if (c == _autoThreshold || c == _colors) return mode == TraceMode.Shapes;
         if (c == _isolate) return mode != TraceMode.Silhouette;
         if (c == _aiEdges) return mode == TraceMode.Edges;
+        if (c == _aiLineArt) return mode == TraceMode.LineArt && ModelStore.Shared.IsAvailable(ModelNames.LineArt);
         if (c == _fillHoles) return !strokes;
         if (c == _strokes) return strokes;
         if (c == _strokeWidth) return strokes && _strokes.SelectedIndex == 1;
@@ -243,6 +245,7 @@ sealed partial class MainForm
             _fillHoles.Checked = s.FillHoles;
             _keepLargest.Checked = s.Keep == KeepShapes.Largest;
             _aiEdges.Checked = s.UseAiEdges;
+            _aiLineArt.Checked = s.UseAiLineArt;
             _curves.SelectedIndex = (int)s.Curves;
             _corners.Value = s.CornerSharpness;
             _snapCircles.Checked = s.SnapCircles;
@@ -291,6 +294,7 @@ sealed partial class MainForm
         s.FillHoles = _fillHoles.Checked;
         s.Keep = _keepLargest.Checked ? KeepShapes.Largest : KeepShapes.All;
         s.UseAiEdges = _aiEdges.Checked;
+        s.UseAiLineArt = _aiLineArt.Checked;
         s.Curves = (CurveStyle)_curves.SelectedIndex;
         s.CornerSharpness = _corners.Value;
         s.SnapCircles = _snapCircles.Checked;

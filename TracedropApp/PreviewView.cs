@@ -299,13 +299,18 @@ sealed class PreviewView : Control
         var top = zone.Top + zone.Height / 2 - this.Px(70);
         using (var disc = new SolidBrush(Palette.AccentPale))
             g.FillEllipse(disc, cx - icon / 2f, top, icon, icon);
-        // A small "picture to outline" glyph: a mountain inside a frame, traced by a pen line.
+        // The Tracedrop generator, drawn as an outline (an "outline generator").
         var k = icon / 64f;
-        PointF P(float x, float y) => new(cx + x * k, top + icon / 2f + y * k);
-        using (var pen = new Pen(Palette.Accent, Math.Max(2f, 2.6f * k)) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
+        float X(float x) => cx + x * k;
+        float Y(float y) => top + icon / 2f + y * k;
+        using (var pen = new Pen(Palette.Accent, Math.Max(1.6f, 2.4f * k)) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
+        using (var fill = new SolidBrush(Palette.Accent))
         {
-            g.DrawLines(pen, new[] { P(-16, -12), P(16, -12), P(16, 12), P(-16, 12), P(-16, -12) });
-            g.DrawLines(pen, new[] { P(-12, 8), P(-3, -3), P(3, 3), P(7, -1), P(12, 8) });
+            using (var tank = UiKit.RoundedRect(new RectangleF(X(-11), Y(-15), 22 * k, 7 * k), 3 * k)) g.DrawPath(pen, tank);
+            using (var frame = UiKit.RoundedRect(new RectangleF(X(-18), Y(-5), 36 * k, 19 * k), 5 * k)) g.DrawPath(pen, frame);
+            g.FillPolygon(fill, new[] { new PointF(X(2), Y(-2)), new PointF(X(-5), Y(6)), new PointF(X(-0.5f), Y(6)), new PointF(X(-2.5f), Y(12)), new PointF(X(5), Y(3)), new PointF(X(0.5f), Y(3)), new PointF(X(3), Y(-2)) });
+            g.DrawEllipse(pen, X(-14), Y(14), 7 * k, 7 * k);
+            g.DrawEllipse(pen, X(7), Y(14), 7 * k, 7 * k);
         }
         const TextFormatFlags flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
         var y = (int)(top + icon + this.Px(16));

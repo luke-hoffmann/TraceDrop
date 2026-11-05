@@ -157,7 +157,7 @@ public sealed class TraceJob : IDisposable
             cancel.ThrowIfCancellationRequested();
 
             // 4. AI maps on the prepared picture.
-            if (s.Mode == TraceMode.LineArt)
+            if (s.Mode == TraceMode.LineArt && s.UseAiLineArt)
             {
                 if (_lineKey != prepareKey)
                 {
@@ -167,7 +167,8 @@ public sealed class TraceJob : IDisposable
                 }
             }
             Lap("line model");
-            var needsEdges = (s.Mode == TraceMode.Edges && s.UseAiEdges) || (s.Mode == TraceMode.LineArt && _lineInk is null);
+            var lineInk = s.Mode == TraceMode.LineArt && s.UseAiLineArt ? _lineInk : null;
+            var needsEdges = (s.Mode == TraceMode.Edges && s.UseAiEdges) || (s.Mode == TraceMode.LineArt && lineInk is null);
             if (needsEdges)
             {
                 if (_edgesKey != prepareKey)
@@ -182,7 +183,7 @@ public sealed class TraceJob : IDisposable
 
             Lap("edge model");
             // 5. Detect.
-            var detectKey = Key(prepareKey, needsEdges && _edges is not null, _lineInk is not null, s.Mode, s.Detail, s.Threshold, s.AutoThreshold, s.Colors, s.UseAiEdges, subject is not null, subjectFromAlpha);
+            var detectKey = Key(prepareKey, needsEdges && _edges is not null, lineInk is not null, s.Mode, s.Detail, s.Threshold, s.AutoThreshold, s.Colors, s.UseAiEdges, subject is not null, subjectFromAlpha);
             if (_detectKey != detectKey || _detected is null)
             {
                 DisposeFrom(Stage.Detected);
@@ -193,7 +194,7 @@ public sealed class TraceJob : IDisposable
                     SubjectFromAlpha = subjectFromAlpha,
                     EdgeFused = needsEdges ? _edges?.Fused : null,
                     EdgeAverage = needsEdges ? _edges?.Average : null,
-                    LineInk = _lineInk
+                    LineInk = lineInk
                 };
                 _detected = Detector.Detect(signals, s);
                 _detectKey = detectKey;

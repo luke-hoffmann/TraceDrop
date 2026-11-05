@@ -100,6 +100,10 @@ public sealed class TraceSettings
     /// <summary>Edges mode: use the TEED network (true) or classic Canny (false).</summary>
     public bool UseAiEdges { get; set; } = true;
 
+    /// <summary>Line art mode: use the photo-to-drawing network (true; best for photos and faces) or the built-in
+    /// drawing (false; best for pictures that are already lines, like sketches).</summary>
+    public bool UseAiLineArt { get; set; } = true;
+
     // ---------- Clean up ----------
 
     /// <summary>0..40 px. Bridges small gaps so broken outlines close up.</summary>

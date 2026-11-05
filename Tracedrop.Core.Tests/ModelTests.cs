@@ -113,7 +113,9 @@ public class ModelTests
         using var models = StoreWith(ModelNames.LineArt);
         if (models is null) return;
         using var job = new TraceJob(Synthetic.Sketch(), models);
-        var result = job.Run(Preset("Sketch / drawing"));
+        var s = Preset("Sketch / drawing");
+        s.UseAiLineArt = true;
+        var result = job.Run(s);
         Report("Informative Drawings sketch", result);
         Assert.True(result.Drawing.Paths.Count >= 2);
         // The strokes follow the drawing: every path lies near where ink was drawn (rows 120..540 of 600).
