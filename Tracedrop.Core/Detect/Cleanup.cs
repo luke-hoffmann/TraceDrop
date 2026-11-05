@@ -21,10 +21,14 @@ public static class Cleanup
     /// Picture size the feature-size rules are taken from (default: the detection's own size). A zoomed-in close-up
     /// passes the full picture's size, so the same rules in pixels keep its (now larger) small features.
     /// </param>
-    public static Detection Apply(Detection raw, TraceSettings s, Size? reference = null)
+    /// <param name="edit">
+    /// Shape modes: called for each layer's mask (and its index) after clean-up and hole filling, before picks
+    /// and Keep: where the user's Find and Erase areas change the shapes.
+    /// </param>
+    public static Detection Apply(Detection raw, TraceSettings s, Size? reference = null, Action<Mat, int>? edit = null)
     {
         var size = reference ?? new Size(raw.Width, raw.Height);
-        return raw.IsStrokes ? CleanStrokes(raw.Strokes!, s, size) : CleanRegions(raw.Regions, s, size);
+        return raw.IsStrokes ? CleanStrokes(raw.Strokes!, s, size) : CleanRegions(raw.Regions, s, size, edit);
     }
 
     /// <summary>Pixel bounding box of everything detected, or null when nothing was.</summary>
@@ -55,11 +59,12 @@ public static class Cleanup
         return Detection.FromRegions(layers);
     }
 
-    static Detection CleanRegions(List<RegionLayer> layers, TraceSettings s, Size reference)
+    static Detection CleanRegions(List<RegionLayer> layers, TraceSettings s, Size reference, Action<Mat, int>? edit)
     {
         var cleaned = new List<RegionLayer>();
-        foreach (var layer in layers)
+        for (var index = 0; index < layers.Count; index++)
         {
+            var layer = layers[index];
             var mask = layer.Mask.Clone();
             var scale = Math.Max(0.5, Detector.PixelScale(mask));
             var minArea = MinFeatureArea(s.Detail, reference.Width, reference.Height);
@@ -80,8 +85,7 @@ public static class Cleanup
             }
 
             if (s.FillHoles) FillHoles(mask);
-            // "Erase lines here" areas cut the shapes.
-            foreach (var erase in s.Regions.Where(r => r.Kind == Editing.RegionKind.Erase)) erase.Draw(mask, Scalar.All(0));
+            edit?.Invoke(mask, index);
             ApplyPicks(mask, s.Picks);
             if (s.Keep == KeepShapes.Largest) KeepLargest(mask);
             cleaned.Add(new RegionLayer(layer.Name, mask, layer.Color));

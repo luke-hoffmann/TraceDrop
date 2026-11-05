@@ -350,6 +350,28 @@ public class PipelineTests
     }
 
     [Fact]
+    public void Later_marks_win_where_they_overlap()
+    {
+        var s = Preset("Sketch / drawing");
+        using var job = new TraceJob(new LoadedImage(FaintGlasses(), null), NoModels);
+        var scale = job.Run(s).Width / 800.0;
+        var erase = Circle(RegionKind.Erase, 200 / 800.0, 100 / 600.0, 0.08);
+        var find = Circle(RegionKind.Find, 200 / 800.0, 100 / 600.0, 0.04, amount: 1);
+
+        s.Regions = new() { erase, find }; // erased, then "lines here" in the middle: the middle comes back
+        Assert.True(PathsNear(job.Run(s).Drawing, scale, 200, 100, 20, 10) > 0);
+        s.Regions = new() { find, erase }; // the later erase wins
+        Assert.Equal(0, PathsNear(job.Run(s).Drawing, scale, 200, 100, 50, 10));
+
+        // Shape modes too: a Find area inside an erased patch brings the shape back there.
+        using var shapes = new TraceJob(Synthetic.Part(), NoModels);
+        var part = Preset("Part to copy");
+        var holes = shapes.Run(part).Drawing.Paths.Count(p => p.Role == PathRole.Hole);
+        part.Regions = new() { Circle(RegionKind.Erase, 420 / 1200.0, 470 / 900.0, 0.04), Circle(RegionKind.Find, 420 / 1200.0, 470 / 900.0, 0.06) };
+        Assert.Equal(holes, shapes.Run(part).Drawing.Paths.Count(p => p.Role == PathRole.Hole));
+    }
+
+    [Fact]
     public void A_deleted_line_stays_deleted_when_the_settings_change()
     {
         var s = Preset("Sketch / drawing");
