@@ -1,4 +1,5 @@
 using Tracedrop.Core;
+using Tracedrop.Core.Ai;
 using Tracedrop.Core.Export;
 using Tracedrop.Core.Portable;
 
@@ -50,6 +51,7 @@ sealed partial class MainForm
     readonly ToggleRow _formatDxf = new("DXF", true, "CAD: SolidWorks, Fusion, AutoCAD");
     readonly ToggleRow _formatSvg = new("SVG", false, "Laser, Inkscape, Illustrator, web");
     readonly ToggleRow _formatPdf = new("PDF", false, "Print, Illustrator, CorelDRAW");
+    readonly ToggleRow _useGpu = new("Use graphics card for AI", true, "Off = CPU: slower, works on any PC");
 
     readonly RoundedButton _applyAllButton = new("Apply to all pictures", ButtonKind.Secondary, 200);
 
@@ -94,7 +96,7 @@ sealed partial class MainForm
         var main = new Control[] { presetTitle, presetRow, _presetNote, _mode, _modeNote, _detail, _threshold, _autoThreshold, _colors, _smoothness };
         var prepare = new Control[] { _blur, _smoothTexture, _despeckle, _contrast, _localContrast, _brightness, _invert, _isolate };
         var clean = new Control[] { _closeGaps, _fillHoles, _keepLargest, _aiEdges };
-        var output = new Control[] { _curves, _corners, _snapCircles, _strokes, _strokeWidth, _size, _offset, _units, _resolution, _formatDxf, _formatSvg, _formatPdf };
+        var output = new Control[] { _curves, _corners, _snapCircles, _strokes, _strokeWidth, _size, _offset, _units, _resolution, _formatDxf, _formatSvg, _formatPdf, _useGpu };
 
         _settingsStack.SuspendLayout();
         foreach (var c in main) _settingsStack.Controls.Add(c);
@@ -128,6 +130,15 @@ sealed partial class MainForm
         _resolution.Box.SelectedIndexChanged += (_, _) => OnUiChanged();
         foreach (var format in new[] { _formatDxf, _formatSvg, _formatPdf })
             format.CheckedChanged += (_, _) => OnFormatsChanged(format);
+        _useGpu.Checked = _config.UseGpu;
+        _useGpu.CheckedChanged += (_, _) =>
+        {
+            if (_loading) return;
+            _config.UseGpu = _useGpu.Checked;
+            ModelStore.Shared.PreferGpu = _useGpu.Checked; // models reload on the chosen device at the next trace
+            SaveConfigSoon();
+            RetraceAll();
+        };
 
         _presetMenu.Items.Add("Save as new preset…", null, (_, _) => SaveAsPreset());
         _presetMenu.Items.Add("Update this preset", null, (_, _) => UpdatePreset());
@@ -355,6 +366,16 @@ sealed partial class MainForm
         ShowStatus($"Applied to {_items.Count} picture{(_items.Count == 1 ? "" : "s")}.", Palette.Muted);
     }
 
+    /// <summary>Traces every picture again (after switching AI device).</summary>
+    void RetraceAll()
+    {
+        foreach (var item in _items)
+        {
+            lock (item.Gate) item.Version++;
+        }
+        _worker.Signal();
+    }
+
     void OnFormatsChanged(ToggleRow changed)
     {
         if (_loading) return;
@@ -464,7 +485,7 @@ sealed partial class MainForm
         RefreshPresetBox();
         CaptureConfigFromUi();
         SaveConfigSoon();
-        ShowStatus($"Saved preset “{name}”. It travels with Tracedrop.exe.", Palette.Green);
+        ShowStatus($"Saved preset “{name}”. It travels with Tracedrop.exe.", Palette.Accent);
     }
 
     void UpdatePreset()
@@ -476,7 +497,7 @@ sealed partial class MainForm
         RefreshPresetBox();
         CaptureConfigFromUi();
         SaveConfigSoon();
-        ShowStatus($"Updated preset “{preset.Name}”.", Palette.Green);
+        ShowStatus($"Updated preset “{preset.Name}”.", Palette.Accent);
     }
 
     void RenamePreset()

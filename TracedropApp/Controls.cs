@@ -106,7 +106,7 @@ sealed class SliderRow : Control
             var w = TextRenderer.MeasureText(g, Label, UiFonts.Body, Size.Empty, flags).Width;
             TextRenderer.DrawText(g, hint, UiFonts.Caption, new Rectangle(w + this.Px(6), 0, Width - w - this.Px(60), textRect.Height), Palette.Muted, flags | TextFormatFlags.EndEllipsis);
         }
-        TextRenderer.DrawText(g, Format(_value), UiFonts.BodyStrong, textRect, Enabled ? Palette.Green : Palette.DisabledText, flags | TextFormatFlags.Right);
+        TextRenderer.DrawText(g, Format(_value), UiFonts.BodyStrong, textRect, Enabled ? Palette.Accent : Palette.DisabledText, flags | TextFormatFlags.Right);
 
         var track = Track;
         var t = (Maximum - Minimum) <= 0 ? 0 : (_value - Minimum) / (Maximum - Minimum);
@@ -121,7 +121,7 @@ sealed class SliderRow : Control
         if (filled.Width > 0)
         {
             using var path = UiKit.RoundedRect(filled, track.Height / 2f);
-            using var brush = new SolidBrush(Enabled ? Palette.Green : Palette.DisabledText);
+            using var brush = new SolidBrush(Enabled ? Palette.Accent : Palette.DisabledText);
             g.FillPath(brush, path);
         }
         var r = this.Px(_dragging || _hover || Focused ? 9 : 8);
@@ -130,11 +130,11 @@ sealed class SliderRow : Control
             g.FillEllipse(shadow, thumbX - r, cy - r + 1, 2 * r, 2 * r);
         using (var white = new SolidBrush(Color.White))
             g.FillEllipse(white, thumbX - r, cy - r, 2 * r, 2 * r);
-        using (var ring = new Pen(Enabled ? Palette.Green : Palette.DisabledText, Math.Max(2f, this.Px(2))))
+        using (var ring = new Pen(Enabled ? Palette.Accent : Palette.DisabledText, Math.Max(2f, this.Px(2))))
             g.DrawEllipse(ring, thumbX - r + 1, cy - r + 1, 2 * r - 2, 2 * r - 2);
         if (Focused && ShowFocusCues)
         {
-            using var focus = new Pen(Color.FromArgb(70, Palette.Green), this.Px(4));
+            using var focus = new Pen(Color.FromArgb(70, Palette.Accent), this.Px(4));
             g.DrawEllipse(focus, thumbX - r - 3, cy - r - 3, 2 * r + 6, 2 * r + 6);
         }
     }
@@ -278,7 +278,7 @@ sealed class Segmented : Control
             if (selected || i == _hover)
             {
                 using var path = UiKit.RoundedRect(r, this.Px(8));
-                using var brush = new SolidBrush(selected ? (Enabled ? Palette.Green : Palette.DisabledText) : Palette.Hover);
+                using var brush = new SolidBrush(selected ? (Enabled ? Palette.Accent : Palette.DisabledText) : Palette.Hover);
                 g.FillPath(brush, path);
             }
             var color = selected ? Color.White : Enabled ? Palette.Ink : Palette.DisabledText;
@@ -287,7 +287,7 @@ sealed class Segmented : Control
         }
         if (Focused && ShowFocusCues)
         {
-            using var pen = new Pen(Color.FromArgb(120, Palette.Green), 2);
+            using var pen = new Pen(Color.FromArgb(120, Palette.Accent), 2);
             using var path = UiKit.RoundedRect(new RectangleF(bar.X + 1, bar.Y + 1, bar.Width - 2, bar.Height - 2), this.Px(10));
             g.DrawPath(pen, path);
         }
@@ -387,7 +387,7 @@ sealed class ToggleRow : Control
         var r = new RectangleF(Width - switchW - 1, (Height - switchH) / 2f, switchW, switchH);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var path = UiKit.RoundedRect(r, switchH / 2f))
-        using (var brush = new SolidBrush(_checked ? (Enabled ? Palette.Green : Palette.DisabledText) : Palette.ControlBorder))
+        using (var brush = new SolidBrush(_checked ? (Enabled ? Palette.Accent : Palette.DisabledText) : Palette.ControlBorder))
             g.FillPath(brush, path);
         var knob = switchH - this.Px(6);
         var kx = _checked ? r.Right - knob - this.Px(3) : r.Left + this.Px(3);
@@ -395,7 +395,7 @@ sealed class ToggleRow : Control
             g.FillEllipse(white, kx, r.Top + this.Px(3), knob, knob);
         if (Focused && ShowFocusCues)
         {
-            using var pen = new Pen(Color.FromArgb(110, Palette.Green), 2);
+            using var pen = new Pen(Color.FromArgb(110, Palette.Accent), 2);
             using var path = UiKit.RoundedRect(RectangleF.Inflate(r, 2, 2), switchH / 2f + 2);
             g.DrawPath(pen, path);
         }
@@ -485,7 +485,7 @@ sealed class SectionHeader : Control
         else g.DrawLines(pen, new[] { new PointF(cx - s / 2f, cy - s), new PointF(cx + s / 2f, cy), new PointF(cx - s / 2f, cy + s) });
         if (Focused && ShowFocusCues)
         {
-            using var focus = new Pen(Color.FromArgb(110, Palette.Green), 2);
+            using var focus = new Pen(Color.FromArgb(110, Palette.Accent), 2);
             g.DrawRectangle(focus, 1, 2, Width - 3, Height - 4);
         }
     }

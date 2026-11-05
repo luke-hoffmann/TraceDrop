@@ -20,6 +20,9 @@ public sealed class AppConfig
     /// <summary>Formats written for every traced picture; the first one is what dragging a row gives.</summary>
     public List<ExportFormat> Formats { get; set; } = new() { ExportFormat.Dxf };
 
+    /// <summary>Run the AI models on the graphics card. Switched off automatically if the GPU fails.</summary>
+    public bool UseGpu { get; set; } = true;
+
     /// <summary>Show the vector over the photo (true) or on white (false).</summary>
     public bool OverlayOnPhoto { get; set; } = true;
 

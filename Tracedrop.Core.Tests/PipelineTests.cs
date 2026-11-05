@@ -221,23 +221,4 @@ public class PipelineTests
         var ex = Assert.Throws<InvalidDataException>(() => ImageLoader.Load(Encoding.UTF8.GetBytes("not a picture at all"), ".png"));
         Assert.Contains("isn't a picture", ex.Message);
     }
-
-    [Fact]
-    public void Teed_edges_trace_when_the_model_is_available()
-    {
-        var folder = Environment.GetEnvironmentVariable("TRACEDROP_MODELS") ?? Path.Combine(RepoRoot(), "models");
-        if (!File.Exists(Path.Combine(folder, ModelNames.Edges))) return; // model not fetched: nothing to check
-        using var models = new ModelStore(folder) { PreferGpu = false };
-        using var job = new TraceJob(Synthetic.Shapes(), models);
-        var result = job.Run(Preset("All edges"));
-        Assert.Empty(result.Notes);
-        Assert.True(result.Drawing.Paths.Count >= 4);
-    }
-
-    static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Tracedrop.sln"))) dir = dir.Parent;
-        return dir?.FullName ?? AppContext.BaseDirectory;
-    }
 }

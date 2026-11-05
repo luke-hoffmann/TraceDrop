@@ -75,6 +75,9 @@ The main sliders cover almost everything:
   for clearance in foam inserts or for kerf.
 - *Resolution*: the size the picture is traced at (1024 to 3600 px). Higher is more precise and slower.
 - *Files*: DXF, SVG and/or PDF. Dragging gives you every format that's switched on.
+- *Use graphics card for AI*: on by default. Tracedrop uses the GPU with the most video memory (the discrete
+  GPU on laptops that have two). If the GPU fails, for example a driver reset or running out of video memory,
+  Tracedrop switches to the CPU, finishes the picture there, and remembers the choice.
 
 ## Files for CAD
 
@@ -128,7 +131,9 @@ That fetches the AI models, runs the tests and writes `dist\Tracedrop.exe`: one 
 about 120 MB, or roughly 350 MB with the downloaded background-removal and line-drawing models. It also builds
 from Linux or macOS with `dotnet publish TracedropApp -c Release -o dist`.
 
-Requirements: Windows 10 or 11, x64. A DirectX 12 GPU makes the AI steps fast but isn't required.
+Requirements: Windows 10 or 11, x64. A DirectX 12 GPU makes the AI steps fast but isn't required, and the
+Visual C++ runtime is built in. The window stays responsive while models run: AI and image work run in the
+background and leave CPU cores free for the window.
 
 ## Project layout
 

@@ -12,6 +12,7 @@ or AGPL (which is why it has its own tracer instead of Potrace, which is GPL).
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) with DirectML | MIT | Running the AI models on any DirectX 12 GPU or the CPU |
 | [Magick.NET](https://github.com/dlemstra/Magick.NET) (ImageMagick, libheif, libde265 and other codecs) | Apache-2.0 / ImageMagick licence; codecs under their own open-source licences | Reading HEIC/HEIF, AVIF, GIF, PSD and other formats |
 | [netDxf](https://github.com/haplokuon/netDxf) | MIT | Writing DXF files |
+| Microsoft Visual C++ runtime (vcruntime140, msvcp140) | Microsoft Visual C++ Redistributable terms (free to redistribute) | Needed by OpenCV and ONNX Runtime; bundled so Tracedrop runs on PCs without it |
 
 HEIC pictures use the HEVC codec, which is covered by patents in some countries; Tracedrop only decodes.
 

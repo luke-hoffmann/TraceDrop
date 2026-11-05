@@ -3,23 +3,33 @@ using System.Runtime.InteropServices;
 
 namespace TracedropApp;
 
+/// <summary>Tracedrop's colours: neutral cool greys with a clean blue accent (Taildrop is green).</summary>
 static class Palette
 {
-    public static readonly Color Background = Color.FromArgb(246, 247, 244);
+    public static readonly Color Background = Color.FromArgb(245, 247, 250);
     public static readonly Color Surface = Color.White;
-    public static readonly Color Ink = Color.FromArgb(25, 28, 24);
-    public static readonly Color Muted = Color.FromArgb(102, 110, 100);
-    public static readonly Color Green = Color.FromArgb(30, 106, 61);
-    public static readonly Color GreenPale = Color.FromArgb(224, 244, 231);
-    public static readonly Color Red = Color.FromArgb(168, 57, 47);
+    public static readonly Color Ink = Color.FromArgb(24, 32, 43);
+    public static readonly Color Muted = Color.FromArgb(94, 106, 121);
+    public static readonly Color Accent = Color.FromArgb(31, 95, 214);
+    public static readonly Color AccentHover = Color.FromArgb(43, 109, 227);
+    public static readonly Color AccentPressed = Color.FromArgb(24, 73, 168);
+    public static readonly Color AccentPale = Color.FromArgb(228, 237, 252);
+    public static readonly Color AccentPaleHover = Color.FromArgb(211, 226, 250);
+    public static readonly Color AccentPalePressed = Color.FromArgb(190, 211, 245);
+    /// <summary>Secondary text on an accent-filled background (selected rows).</summary>
+    public static readonly Color OnAccentMuted = Color.FromArgb(220, 232, 252);
+    public static readonly Color Red = Color.FromArgb(190, 52, 52);
 
-    public static readonly Color Border = Color.FromArgb(222, 227, 219);
-    public static readonly Color ControlBorder = Color.FromArgb(205, 212, 202);
-    public static readonly Color Hover = Color.FromArgb(242, 245, 240);
-    public static readonly Color SelectionIdle = Color.FromArgb(214, 228, 219);
-    public static readonly Color DisabledFill = Color.FromArgb(232, 235, 230);
-    public static readonly Color DisabledText = Color.FromArgb(152, 160, 150);
-    public static readonly Color Placeholder = Color.FromArgb(240, 242, 238);
+    public static readonly Color Border = Color.FromArgb(220, 227, 235);
+    public static readonly Color ControlBorder = Color.FromArgb(204, 213, 224);
+    public static readonly Color ControlBorderHover = Color.FromArgb(172, 184, 199);
+    public static readonly Color Separator = Color.FromArgb(234, 238, 243);
+    public static readonly Color Hover = Color.FromArgb(240, 244, 249);
+    public static readonly Color Pressed = Color.FromArgb(228, 233, 240);
+    public static readonly Color SelectionIdle = Color.FromArgb(213, 225, 243);
+    public static readonly Color DisabledFill = Color.FromArgb(230, 234, 240);
+    public static readonly Color DisabledText = Color.FromArgb(151, 161, 174);
+    public static readonly Color Placeholder = Color.FromArgb(238, 242, 247);
 }
 
 /// <summary>Shared fonts. Static on purpose: they live as long as the app, and controls never dispose a font they were handed.</summary>
@@ -174,17 +184,17 @@ sealed class RoundedButton : Button
         return _kind switch
         {
             ButtonKind.Primary => (
-                down ? Color.FromArgb(20, 80, 44) : _hover ? Color.FromArgb(38, 124, 72) : Palette.Green,
+                down ? Palette.AccentPressed : _hover ? Palette.AccentHover : Palette.Accent,
                 Color.White,
                 Color.Transparent),
             ButtonKind.Secondary => (
-                down ? Color.FromArgb(184, 224, 199) : _hover ? Color.FromArgb(207, 236, 218) : Palette.GreenPale,
-                Palette.Green,
+                down ? Palette.AccentPalePressed : _hover ? Palette.AccentPaleHover : Palette.AccentPale,
+                Palette.Accent,
                 Color.Transparent),
             _ => (
-                down ? Color.FromArgb(231, 235, 228) : _hover ? Palette.Hover : Palette.Surface,
+                down ? Palette.Pressed : _hover ? Palette.Hover : Palette.Surface,
                 Palette.Ink,
-                _hover || down ? Color.FromArgb(178, 188, 175) : Palette.ControlBorder)
+                _hover || down ? Palette.ControlBorderHover : Palette.ControlBorder)
         };
     }
 
@@ -220,7 +230,7 @@ sealed class RoundedButton : Button
             var ringWidth = Math.Max(2f, this.Px(2));
             var ring = new RectangleF(ringWidth / 2, ringWidth / 2, Width - ringWidth, Height - ringWidth);
             using var ringPath = UiKit.RoundedRect(ring, this.Px(Radius + Inset - 1));
-            using var ringPen = new Pen(Color.FromArgb(150, Palette.Green), ringWidth);
+            using var ringPen = new Pen(Color.FromArgb(150, Palette.Accent), ringWidth);
             g.DrawPath(ringPen, ringPath);
         }
         g.SmoothingMode = SmoothingMode.Default;

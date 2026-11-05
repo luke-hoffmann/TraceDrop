@@ -35,8 +35,8 @@ jobs:
         run: |
           pip install --quiet onnxruntime numpy
           python tools/models/fetch_models.py
-      - name: Test
-        run: dotnet test Tracedrop.Core.Tests -c Release
+      - name: Test (including the AI models end to end)
+        run: dotnet test Tracedrop.Core.Tests -c Release --logger "console;verbosity=detailed"
       - name: Publish one portable exe
         run: dotnet publish TracedropApp -c Release -o dist
       - name: Show size

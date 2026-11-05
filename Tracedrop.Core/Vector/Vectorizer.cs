@@ -68,7 +68,7 @@ public static class Vectorizer
     {
         var options = Options(s, width, height);
         var fitted = new VectorPath?[raw.Count];
-        Parallel.For(0, raw.Count, new ParallelOptions { CancellationToken = cancel }, i =>
+        Parallel.For(0, raw.Count, new ParallelOptions { CancellationToken = cancel, MaxDegreeOfParallelism = Ai.ModelStore.ComputeThreads }, i =>
         {
             var r = raw[i];
             var f = Fitter.Fit(r.Points, r.Closed, options);

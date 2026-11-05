@@ -162,7 +162,7 @@ public sealed class TraceJob : IDisposable
                 if (_lineKey != prepareKey)
                 {
                     _lineInk?.Dispose();
-                    _lineInk = AiModels.LineArt(_models, _prepared, 1024);
+                    _lineInk = AiModels.LineArt(_models, _prepared);
                     _lineKey = prepareKey;
                 }
             }

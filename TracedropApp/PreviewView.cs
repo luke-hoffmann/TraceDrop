@@ -245,7 +245,7 @@ sealed class PreviewView : Control
         {
             var x = (float)(_offset.X + p.X * PictureSize.Width * _scale);
             var y = (float)(_offset.Y + p.Y * PictureSize.Height * _scale);
-            using var fill = new SolidBrush(p.Keep ? Palette.Green : Palette.Red);
+            using var fill = new SolidBrush(p.Keep ? Palette.Accent : Palette.Red);
             using var ring = new Pen(Color.White, Math.Max(2f, this.Px(2)));
             g.FillEllipse(fill, x - r, y - r, 2 * r, 2 * r);
             g.DrawEllipse(ring, x - r, y - r, 2 * r, 2 * r);
@@ -297,12 +297,12 @@ sealed class PreviewView : Control
         var icon = this.Px(64);
         var cx = zone.Left + zone.Width / 2;
         var top = zone.Top + zone.Height / 2 - this.Px(70);
-        using (var disc = new SolidBrush(Palette.GreenPale))
+        using (var disc = new SolidBrush(Palette.AccentPale))
             g.FillEllipse(disc, cx - icon / 2f, top, icon, icon);
         // A small "picture to outline" glyph: a mountain inside a frame, traced by a pen line.
         var k = icon / 64f;
         PointF P(float x, float y) => new(cx + x * k, top + icon / 2f + y * k);
-        using (var pen = new Pen(Palette.Green, Math.Max(2f, 2.6f * k)) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
+        using (var pen = new Pen(Palette.Accent, Math.Max(2f, 2.6f * k)) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
         {
             g.DrawLines(pen, new[] { P(-16, -12), P(16, -12), P(16, 12), P(-16, 12), P(-16, -12) });
             g.DrawLines(pen, new[] { P(-12, 8), P(-3, -3), P(3, 3), P(7, -1), P(12, 8) });
@@ -421,7 +421,7 @@ sealed class DragChip : Control
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
         using (var path = UiKit.RoundedRect(r, r.Height / 2))
-        using (var brush = new SolidBrush(_hover ? Color.FromArgb(38, 124, 72) : Palette.Green))
+        using (var brush = new SolidBrush(_hover ? Palette.AccentHover : Palette.Accent))
             g.FillPath(brush, path);
         // Arrow out of a tray.
         var k = this.Px(1);

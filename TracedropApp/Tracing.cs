@@ -134,6 +134,8 @@ sealed class TraceWorker : IDisposable
 
     void Loop()
     {
+        // Leave CPU cores for the window: OpenCV otherwise uses every core during filters.
+        Cv2.SetNumThreads(ModelStore.ComputeThreads);
         // Load the edge model once in the background so the first trace doesn't pay for it.
         try { using var tiny = new Mat(16, 16, MatType.CV_8UC3, Scalar.All(128)); var e = AiModels.Edges(Models, tiny); e?.Fused.Dispose(); e?.Average.Dispose(); }
         catch { /* reported when actually used */ }
@@ -235,13 +237,22 @@ sealed class TraceWorker : IDisposable
         }
     }
 
-    static string Describe(Exception ex) => ex switch
+    /// <summary>One short, readable sentence for the list and preview (full details go to the debugger only).</summary>
+    static string Describe(Exception ex)
     {
-        InvalidDataException => ex.Message,
-        FileNotFoundException or DirectoryNotFoundException => "The picture is no longer there.",
-        OutOfMemoryException => "Not enough memory for this picture. Try a smaller Resolution.",
-        _ => ex.Message
-    };
+        Format.Log(ex.ToString());
+        var text = ex switch
+        {
+            InvalidDataException => ex.Message,
+            FileNotFoundException or DirectoryNotFoundException => "The picture is no longer there.",
+            OutOfMemoryException => "Not enough memory for this picture. Try a lower Resolution under Output.",
+            Microsoft.ML.OnnxRuntime.OnnxRuntimeException => "An AI model failed on this PC. Right-click → Try again, or switch the AI mode.",
+            DllNotFoundException or BadImageFormatException => "A part of Tracedrop couldn't load. Please install the Microsoft Visual C++ Redistributable (x64).",
+            _ => ex.Message
+        };
+        var firstLine = text.Split('\n', 2)[0].Trim();
+        return firstLine.Length > 160 ? firstLine[..157] + "…" : firstLine;
+    }
 
     Dictionary<ExportFormat, string> ExportFiles(TraceItem item, TraceResult result)
     {
@@ -312,8 +323,9 @@ sealed class TraceWorker : IDisposable
         var data = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
         try
         {
+            int rows = bgr.Rows;
             var row = new byte[bgr.Cols * 3];
-            for (var y = 0; y < bgr.Rows; y++)
+            for (var y = 0; y < rows; y++)
             {
                 Marshal.Copy(bgr.Ptr(y), row, 0, row.Length);
                 Marshal.Copy(row, 0, data.Scan0 + y * data.Stride, row.Length);

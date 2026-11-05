@@ -65,14 +65,15 @@ public static class Detector
         lab.ConvertTo(lab, MatType.CV_32FC3);
 
         // Background colour = per-channel median of a thin border band.
-        var band = Math.Max(2, Math.Min(lab.Rows, lab.Cols) / 50);
+        int rows = lab.Rows, cols = lab.Cols;
+        var band = Math.Max(2, Math.Min(rows, cols) / 50);
         var samples = new List<Vec3f>();
-        var step = Math.Max(1, (lab.Rows + lab.Cols) / 2000);
-        for (var y = 0; y < lab.Rows; y += step)
+        var step = Math.Max(1, (rows + cols) / 2000);
+        for (var y = 0; y < rows; y += step)
         {
-            for (var x = 0; x < lab.Cols; x += step)
+            for (var x = 0; x < cols; x += step)
             {
-                if (y >= band && y < lab.Rows - band && x >= band && x < lab.Cols - band) { x = lab.Cols - band - 1; continue; }
+                if (y >= band && y < rows - band && x >= band && x < cols - band) { x = cols - band - 1; continue; }
                 samples.Add(lab.At<Vec3f>(y, x));
             }
         }
@@ -170,8 +171,9 @@ public static class Detector
 
         // The colour that covers most of the border is the background and isn't traced.
         var borderCounts = new int[k];
-        for (var x = 0; x < assignment.Cols; x++) { borderCounts[assignment.At<byte>(0, x)]++; borderCounts[assignment.At<byte>(assignment.Rows - 1, x)]++; }
-        for (var y = 0; y < assignment.Rows; y++) { borderCounts[assignment.At<byte>(y, 0)]++; borderCounts[assignment.At<byte>(y, assignment.Cols - 1)]++; }
+        int aRows = assignment.Rows, aCols = assignment.Cols;
+        for (var x = 0; x < aCols; x++) { borderCounts[assignment.At<byte>(0, x)]++; borderCounts[assignment.At<byte>(aRows - 1, x)]++; }
+        for (var y = 0; y < aRows; y++) { borderCounts[assignment.At<byte>(y, 0)]++; borderCounts[assignment.At<byte>(y, aCols - 1)]++; }
         var background = Array.IndexOf(borderCounts, borderCounts.Max());
 
         var layers = new List<RegionLayer>();

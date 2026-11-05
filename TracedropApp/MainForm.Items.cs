@@ -61,6 +61,7 @@ sealed partial class MainForm
         _list.ContextMenuStrip = _itemMenu;
         _itemMenu.Items.Add("Open", null, (_, _) => { foreach (var i in SelectedItems()) OpenOutput(i); });
         _itemMenu.Items.Add("Save…", null, async (_, _) => await SaveItemsAsync(SelectedItems()));
+        _itemMenu.Items.Add("Try again", null, (_, _) => RetrySelected());
         _itemMenu.Items.Add(new ToolStripSeparator());
         _itemMenu.Items.Add("Remove", null, (_, _) => RemoveSelected());
         ((ToolStripMenuItem)_itemMenu.Items[0]).Font = UiFonts.BodyStrong;
@@ -91,8 +92,8 @@ sealed partial class MainForm
         _revealLink.Font = UiFonts.Small;
         _revealLink.AutoSize = true;
         _revealLink.Margin = new Padding(6, 6, 0, 0);
-        _revealLink.LinkColor = Palette.Green;
-        _revealLink.ActiveLinkColor = Color.FromArgb(20, 80, 44);
+        _revealLink.LinkColor = Palette.Accent;
+        _revealLink.ActiveLinkColor = Palette.AccentPressed;
         _revealLink.LinkBehavior = LinkBehavior.HoverUnderline;
         _revealLink.Visible = false;
         _revealLink.LinkClicked += (_, _) => RevealInExplorer();
@@ -464,9 +465,9 @@ sealed partial class MainForm
 
         var focused = _list.Focused;
         var selected = e.Item.Selected;
-        var onGreen = selected && focused;
+        var onAccent = selected && focused;
         var plate = Rectangle.Inflate(row, -this.Px(3), -this.Px(2));
-        Color? plateColor = selected ? (focused ? Palette.Green : Palette.SelectionIdle) : ReferenceEquals(e.Item, _list.HotItem) ? Palette.Hover : null;
+        Color? plateColor = selected ? (focused ? Palette.Accent : Palette.SelectionIdle) : ReferenceEquals(e.Item, _list.HotItem) ? Palette.Hover : null;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         if (plateColor is { } fill)
         {
@@ -476,7 +477,7 @@ sealed partial class MainForm
         }
         else
         {
-            using var separator = new Pen(Color.FromArgb(236, 239, 233));
+            using var separator = new Pen(Palette.Separator);
             g.DrawLine(separator, plate.Left + this.Px(10), row.Bottom - 1, plate.Right - this.Px(10), row.Bottom - 1);
         }
 
@@ -484,7 +485,7 @@ sealed partial class MainForm
         var tile = new Rectangle(plate.Left + this.Px(8), row.Top + (row.Height - tileSize) / 2, tileSize, tileSize);
         using (var path = UiKit.RoundedRect(tile, this.Px(8)))
         {
-            using var tileBrush = new SolidBrush(onGreen ? Color.FromArgb(60, Color.White) : Palette.Placeholder);
+            using var tileBrush = new SolidBrush(onAccent ? Color.FromArgb(60, Color.White) : Palette.Placeholder);
             g.FillPath(tileBrush, path);
             if (item.Thumbnail is { } thumb)
             {
@@ -502,13 +503,13 @@ sealed partial class MainForm
 
         var textLeft = tile.Right + this.Px(10);
         var textWidth = plate.Right - textLeft - this.Px(8);
-        var ink = onGreen ? Color.White : Palette.Ink;
-        var muted = onGreen ? Color.FromArgb(222, 241, 229) : Palette.Muted;
+        var ink = onAccent ? Color.White : Palette.Ink;
+        var muted = onAccent ? Palette.OnAccentMuted : Palette.Muted;
         const TextFormatFlags flags = TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.Left;
         TextRenderer.DrawText(g, item.Name, UiFonts.BodyStrong, new Rectangle(textLeft, row.Top + this.Px(10), textWidth, this.Px(20)), ink, flags);
         string status;
         Color statusColor = muted;
-        if (item.State == ItemState.Failed) { status = item.Error ?? "Failed"; statusColor = onGreen ? Color.White : Palette.Red; }
+        if (item.State == ItemState.Failed) { status = item.Error ?? "Failed"; statusColor = onAccent ? Color.White : Palette.Red; }
         else if (item.State == ItemState.Tracing || item.Result is null) status = "Tracing…";
         else
         {
@@ -565,6 +566,18 @@ sealed partial class MainForm
             e.Handled = true;
         }
         else if (e.KeyCode == Keys.Enter) { foreach (var i in SelectedItems()) OpenOutput(i); e.Handled = true; }
+    }
+
+    void RetrySelected()
+    {
+        foreach (var item in SelectedItems())
+        {
+            lock (item.Gate) item.Version++;
+            item.Error = null;
+            item.State = ItemState.Waiting;
+            RedrawItem(item);
+            _worker.Signal(item);
+        }
     }
 
     void OpenOutput(TraceItem item)
@@ -645,7 +658,7 @@ sealed partial class MainForm
         var folderName = Path.GetFileName(folder.TrimEnd('\\', '/'));
         if (folderName.Length == 0) folderName = folder;
         if (failure is not null) ShowStatus($"Saved {saved.Count} of {sources.Count}. {failure}", Palette.Red);
-        else ShowStatus($"Saved {saved.Count} file{(saved.Count == 1 ? "" : "s")} to {folderName}", Palette.Green, saved.FirstOrDefault());
+        else ShowStatus($"Saved {saved.Count} file{(saved.Count == 1 ? "" : "s")} to {folderName}", Palette.Accent, saved.FirstOrDefault());
     }
 
     static string AvailablePath(string folder, string name)

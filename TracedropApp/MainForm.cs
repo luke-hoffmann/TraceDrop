@@ -63,6 +63,8 @@ sealed partial class MainForm : Form
         AllowDrop = true;
         StartPosition = FormStartPosition.CenterScreen;
         Padding = new Padding(20, 12, 20, 16);
+        // The exe's own icon for the title bar and taskbar (WinForms otherwise shows a generic window icon).
+        try { Icon = Icon.ExtractAssociatedIcon(exePath); } catch { /* cosmetic */ }
 
         var preview = BuildPreviewPane();
         var gapRight = new Panel { Dock = DockStyle.Right, Width = 16 };
@@ -84,6 +86,11 @@ sealed partial class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         ResumeLayout(false);
 
+        ModelStore.Shared.PreferGpu = _config.UseGpu;
+        ModelStore.Shared.SwitchedToCpu += reason =>
+        {
+            if (IsHandleCreated && !IsDisposed) BeginInvoke(() => OnGpuFailed(reason));
+        };
         _worker = new TraceWorker(_items, () => _config.Formats, _outputPath, update =>
         {
             if (IsHandleCreated && !IsDisposed) BeginInvoke(() => OnTraceUpdate(update));
@@ -192,8 +199,8 @@ sealed partial class MainForm : Form
         _clearPicksLink.Width = 90;
         _clearPicksLink.Dock = DockStyle.Right;
         _clearPicksLink.TextAlign = ContentAlignment.MiddleRight;
-        _clearPicksLink.LinkColor = Palette.Green;
-        _clearPicksLink.ActiveLinkColor = Color.FromArgb(20, 80, 44);
+        _clearPicksLink.LinkColor = Palette.Accent;
+        _clearPicksLink.ActiveLinkColor = Palette.AccentPressed;
         _clearPicksLink.LinkBehavior = LinkBehavior.HoverUnderline;
         _clearPicksLink.Visible = false;
         _clearPicksLink.LinkClicked += (_, _) => ClearPicks();
@@ -300,6 +307,18 @@ sealed partial class MainForm : Form
 
     #endregion
 
+    /// <summary>The GPU failed mid-run: the store already switched to the CPU and re-ran the step. Remember it.</summary>
+    void OnGpuFailed(string reason)
+    {
+        _config.UseGpu = false;
+        _loading = true;
+        _useGpu.Checked = false;
+        _loading = false;
+        SaveConfigSoon();
+        UpdateDeviceLabel();
+        ShowStatus($"Switched AI to the CPU: {reason}. Slower, but it works. You can turn the GPU back on under Output.", Palette.Muted);
+    }
+
     void UpdateDeviceLabel()
     {
         var models = new List<string>();
@@ -307,8 +326,9 @@ sealed partial class MainForm : Form
         if (ModelStore.Shared.IsAvailable(ModelNames.Subject)) models.Add("background removal");
         if (ModelStore.Shared.IsAvailable(ModelNames.LineArt)) models.Add("line drawing");
         var device = ModelStore.Shared.Device;
+        var where = device is null ? "" : device == "CPU" ? "  ·  on the CPU" : $"  ·  on {device}";
         _deviceLabel.Text = models.Count == 0
             ? "AI models not bundled: classic methods only"
-            : $"AI: {string.Join(", ", models)}" + (device is null ? "" : $"  ·  {device}");
+            : $"AI: {string.Join(", ", models)}{where}";
     }
 }

@@ -51,6 +51,17 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
   </ItemGroup>
 
+  <!--
+    OpenCV and ONNX Runtime need the Microsoft Visual C++ runtime. Fresh Windows installs may not have it, so the
+    exe carries its own copy (app-local deployment, which Microsoft allows for these files). Taken from the build
+    machine when it's Windows; the extracted native DLLs then find it in their own folder.
+  -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <None Include="$(SystemRoot)\System32\vcruntime140.dll" Condition="Exists('$(SystemRoot)\System32\vcruntime140.dll')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="vcruntime140.dll" />
+    <None Include="$(SystemRoot)\System32\vcruntime140_1.dll" Condition="Exists('$(SystemRoot)\System32\vcruntime140_1.dll')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="vcruntime140_1.dll" />
+    <None Include="$(SystemRoot)\System32\msvcp140.dll" Condition="Exists('$(SystemRoot)\System32\msvcp140.dll')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="msvcp140.dll" />
+  </ItemGroup>
+
   <!-- OpenCV's video-file DLL (FFmpeg) is large and never used: keep it out of the exe. -->
   <Target Name="DropUnusedOpenCvFfmpegFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
     <ItemGroup>
