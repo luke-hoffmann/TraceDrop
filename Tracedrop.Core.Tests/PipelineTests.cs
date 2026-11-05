@@ -221,4 +221,32 @@ public class PipelineTests
         var ex = Assert.Throws<InvalidDataException>(() => ImageLoader.Load(Encoding.UTF8.GetBytes("not a picture at all"), ".png"));
         Assert.Contains("isn't a picture", ex.Message);
     }
+
+    [Fact]
+    public void Showing_a_traced_picture_again_redoes_no_work()
+    {
+        using var job = new TraceJob(Synthetic.Part(), NoModels);
+        var s = Preset("Object / tool");
+        job.Run(s);
+        var again = job.Run(s);
+        Assert.DoesNotContain(again.StageMs, kv => kv.Value >= 5); // everything came from the cache
+    }
+
+    [Fact]
+    public void Full_size_picture_is_let_go_and_reloaded_when_resolution_changes()
+    {
+        var reloads = 0;
+        using var job = new TraceJob(Synthetic.Part(), NoModels, () => { reloads++; return Synthetic.Part(); });
+        var s = Preset("Object / tool");
+        job.Run(s);
+        var cachedOnly = job.EstimatedBytes;
+        Assert.InRange(cachedOnly, 1, 200L << 20);
+        Assert.Equal(0, reloads);
+
+        s.WorkingSize = 1024;
+        var smaller = job.Run(s);
+        Assert.Equal(1, reloads);
+        Assert.Equal(1024, Math.Max(smaller.Width, smaller.Height));
+        Assert.Equal(1200, job.SourceWidth);
+    }
 }

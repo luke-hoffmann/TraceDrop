@@ -35,7 +35,10 @@ public sealed class TraceResult
 /// </summary>
 public sealed class TraceJob : IDisposable
 {
-    readonly LoadedImage _image;
+    LoadedImage? _image;
+    readonly Func<LoadedImage>? _reload;
+    int _sourceWidth;
+    int _sourceHeight;
     readonly ModelStore _models;
 
     Mat? _working;
@@ -67,14 +70,36 @@ public sealed class TraceJob : IDisposable
     string? _vectorKey;
     VectorDrawing? _drawing;
 
-    public TraceJob(LoadedImage image, ModelStore models)
+    /// <param name="reload">
+    /// Optional way to load the picture again. When given, the full-size picture is let go once the working-size
+    /// copy exists (a 12 MP photo is ~36 MB) and reloaded only if Resolution changes.
+    /// </param>
+    public TraceJob(LoadedImage image, ModelStore models, Func<LoadedImage>? reload = null)
     {
+        _reload = reload;
+        _sourceWidth = image.Width;
+        _sourceHeight = image.Height;
         _image = image;
         _models = models;
     }
 
-    public int SourceWidth => _image.Width;
-    public int SourceHeight => _image.Height;
+    public int SourceWidth => _sourceWidth;
+    public int SourceHeight => _sourceHeight;
+
+    /// <summary>Approximate memory held by the cached stages, in bytes (for the app's cache budget).</summary>
+    public long EstimatedBytes
+    {
+        get
+        {
+            static long M(Mat? m) => m is null || m.IsDisposed ? 0 : m.Total() * m.ElemSize();
+            static long D(Detection? d) => d is null ? 0 : M(d.Strokes) + d.Regions.Sum(r => M(r.Mask));
+            var total = M(_image?.Bgr) + M(_image?.Alpha) + M(_working) + M(_workingAlpha) + M(_subject) + M(_prepared)
+                        + M(_lineInk) + D(_detected) + D(_cleaned);
+            if (_edges is { } e) total += M(e.Fused) + M(e.Average);
+            if (_raw is not null) total += _raw.Sum(r => (long)r.Points.Count * 16 + 64);
+            return total;
+        }
+    }
 
     /// <summary>The working-size picture (after scaling, before Prepare). Valid after the first Run.</summary>
     public Mat? Working => _working;
@@ -98,6 +123,7 @@ public sealed class TraceJob : IDisposable
         if (_working is null || _workingSize != s.WorkingSize)
         {
             DisposeFrom(Stage.Working);
+            _image ??= _reload?.Invoke() ?? throw new InvalidOperationException("The picture is no longer loaded.");
             _working = Prepare.ToWorkingSize(_image.Bgr, s.WorkingSize);
             if (_image.Alpha is not null)
             {
@@ -108,6 +134,11 @@ public sealed class TraceJob : IDisposable
                 if (upscale > 1.5) Cv2.GaussianBlur(_workingAlpha, _workingAlpha, new OpenCvSharp.Size(0, 0), 0.45 * upscale);
             }
             _workingSize = s.WorkingSize;
+            if (_reload is not null)
+            {
+                _image?.Dispose();
+                _image = null;
+            }
         }
         Lap("load");
         cancel.ThrowIfCancellationRequested();
@@ -296,6 +327,7 @@ public sealed class TraceJob : IDisposable
     public void Dispose()
     {
         DisposeFrom(Stage.Working);
-        _image.Dispose();
+        _image?.Dispose();
+        _image = null;
     }
 }

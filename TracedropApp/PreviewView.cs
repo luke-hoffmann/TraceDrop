@@ -103,6 +103,18 @@ sealed class PreviewView : Control
         Invalidate();
     }
 
+    /// <summary>Shows the drawing on white at this picture size while the photo itself is on its way.</summary>
+    public void SetPlaceholder(Size pictureSize)
+    {
+        _photo = _prepared = _detected = null;
+        if (pictureSize != PictureSize)
+        {
+            PictureSize = pictureSize;
+            _fitted = true;
+        }
+        Invalidate();
+    }
+
     public void SetDrawing(VectorDrawing? drawing, IReadOnlyList<PickPoint> picks)
     {
         _picks = picks;

@@ -310,10 +310,11 @@ sealed partial class MainForm
             return;
         }
         if (item.Photo is not null) _preview.SetPictures(item.Photo, item.Prepared, item.Detected);
+        else if (item.Result is { } done) _preview.SetPlaceholder(new Size(done.Width, done.Height)); // already traced: show it now
         List<PickPoint> picks;
         lock (item.Gate) picks = item.Settings.Picks.ToList();
         _preview.SetDrawing(item.Result?.Drawing, picks);
-        _preview.BusyText = item.State == ItemState.Tracing || (item.Photo is null && item.State != ItemState.Failed) ? "Tracing…" : null;
+        _preview.BusyText = item.State == ItemState.Tracing || (item.Result is null && item.State != ItemState.Failed) ? "Tracing…" : null;
         _clearPicksLink.Visible = picks.Count > 0;
         _statsLabel.ForeColor = item.Error is null ? Palette.Muted : Palette.Red;
         _statsLabel.Text = item.Error ?? Stats(item);

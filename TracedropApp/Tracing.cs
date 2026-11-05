@@ -36,9 +36,14 @@ sealed class TraceItem : IDisposable
 
     // Worker-owned.
     public TraceJob? Job;
-    public bool PhotoSent;
     public int DoneVersion = -1;
+    /// <summary>Settings version and selection visit the preview bitmaps were last sent for.</summary>
     public int PreviewVersion = -1;
+    public long PreviewVisit = -1;
+    /// <summary>Selection visit the full photo was last sent for (the UI drops bitmaps when you leave a picture).</summary>
+    public long PhotoVisit = -1;
+    /// <summary>When the job was last used, for least-recently-used eviction.</summary>
+    public long LastUsed;
     public string ExportedFormats = "";
 
     // UI-owned results.
@@ -95,6 +100,7 @@ sealed class TraceWorker : IDisposable
     readonly CancellationTokenSource _stop = new();
     readonly Thread _thread;
     volatile TraceItem? _selected;
+    long _visit;
     TraceItem? _running;
     CancellationTokenSource? _runCancel;
     long _runStarted;
@@ -115,8 +121,21 @@ sealed class TraceWorker : IDisposable
     public TraceItem? Selected
     {
         get => _selected;
-        set { _selected = value; Signal(); }
+        set
+        {
+            if (ReferenceEquals(_selected, value)) return;
+            Interlocked.Increment(ref _visit); // a new visit: the window needs this picture's bitmaps again
+            _selected = value;
+            if (value is not null) value.LastUsed = Environment.TickCount64;
+            Signal();
+        }
     }
+
+    /// <summary>
+    /// Memory the cached pictures may use before the least recently viewed ones are let go (they keep their
+    /// finished drawing and are re-traced only if shown again after eviction): 15% of physical memory, 0.5-3 GB.
+    /// </summary>
+    static readonly long CacheBudget = Math.Clamp((long)(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes * 0.15), 512L << 20, 3L << 30);
 
     /// <summary>Wake the worker. If the item being traced has changed again and its run has gone on a while, restart it.</summary>
     public void Signal(TraceItem? changed = null)
@@ -149,7 +168,7 @@ sealed class TraceWorker : IDisposable
                 if (work.ExportOnly) Export(work.Item, work.Item.Result!);
                 else Process(work.Item);
             }
-            ReleaseIdleJobs();
+            TrimJobs();
         }
     }
 
@@ -160,7 +179,9 @@ sealed class TraceWorker : IDisposable
         List<TraceItem> snapshot;
         lock (_items) snapshot = _items.ToList();
         var selected = _selected;
-        bool Dirty(TraceItem i) => !i.Removed && (i.Version != i.DoneVersion || (ReferenceEquals(i, selected) && i.PreviewVersion != i.Version));
+        var visit = Interlocked.Read(ref _visit);
+        bool Dirty(TraceItem i) => !i.Removed && (i.Version != i.DoneVersion ||
+            (ReferenceEquals(i, selected) && (i.PreviewVersion != i.Version || i.PreviewVisit != visit)));
         if (selected is not null && Dirty(selected)) return new Work(selected, false);
         var dirty = snapshot.FirstOrDefault(Dirty);
         if (dirty is not null) return new Work(dirty, false);
@@ -181,6 +202,11 @@ sealed class TraceWorker : IDisposable
             version = item.Version;
         }
 
+        // Already traced with these settings: this run only redraws the preview from the cache.
+        var previewOnly = version == item.DoneVersion && item.Result is not null && item.Job is not null;
+        var visit = Interlocked.Read(ref _visit);
+        item.LastUsed = Environment.TickCount64;
+
         var cancel = new CancellationTokenSource();
         lock (_runGate)
         {
@@ -188,29 +214,30 @@ sealed class TraceWorker : IDisposable
             _runCancel = cancel;
             _runStarted = Environment.TickCount64;
         }
-        _post(new TraceUpdate(item, version, null, null, null, null, null, null, null, Started: true));
+        if (!previewOnly) _post(new TraceUpdate(item, version, null, null, null, null, null, null, null, Started: true));
 
         Bitmap? thumbnail = null;
         try
         {
             if (item.Job is null)
             {
-                var image = ImageLoader.Load(item.SourcePath);
-                item.Job = new TraceJob(image, Models);
-                item.PhotoSent = false;
+                var path = item.SourcePath;
+                item.Job = new TraceJob(ImageLoader.Load(path), Models, () => ImageLoader.Load(path));
+                item.PhotoVisit = -1;
             }
             var result = item.Job.Run(settings, cancel.Token);
             if (item.Thumbnail is null && item.DoneVersion < 0) thumbnail = Thumb(item.Job.Working!);
-            var outputs = ExportFiles(item, result);
+            var outputs = previewOnly && item.ExportedFormats == FormatKey(_formats()) ? null : ExportFiles(item, result);
 
             Bitmap? photo = null, prepared = null, detected = null;
             if (ReferenceEquals(item, _selected))
             {
-                if (!item.PhotoSent) { photo = ToBitmap(item.Job.Working!); item.PhotoSent = true; }
+                if (item.PhotoVisit != visit) { photo = ToBitmap(item.Job.Working!); item.PhotoVisit = visit; }
                 prepared = ToBitmap(item.Job.Prepared!);
                 using var detectedMat = item.Job.Detected!.RenderPreview();
                 detected = ToBitmap(detectedMat);
                 item.PreviewVersion = version;
+                item.PreviewVisit = visit;
             }
             item.DoneVersion = version;
             _post(new TraceUpdate(item, version, result, null, thumbnail, photo, prepared, detected, outputs));
@@ -223,6 +250,7 @@ sealed class TraceWorker : IDisposable
         {
             item.DoneVersion = version;
             item.PreviewVersion = version;
+            item.PreviewVisit = Interlocked.Read(ref _visit);
             _post(new TraceUpdate(item, version, null, Describe(ex), thumbnail, null, null, null, null));
         }
         finally
@@ -233,7 +261,7 @@ sealed class TraceWorker : IDisposable
                 _runCancel = null;
             }
             cancel.Dispose();
-            if (!ReferenceEquals(item, _selected) || item.Removed) ReleaseJob(item);
+            if (item.Removed) ReleaseJob(item);
         }
     }
 
@@ -296,19 +324,28 @@ sealed class TraceWorker : IDisposable
         return ToBitmap(small);
     }
 
-    void ReleaseIdleJobs()
+    /// <summary>Lets go of the least recently viewed pictures' caches until the rest fit the budget.</summary>
+    void TrimJobs()
     {
         List<TraceItem> snapshot;
         lock (_items) snapshot = _items.ToList();
-        foreach (var item in snapshot)
-            if (!ReferenceEquals(item, _selected) && item.Job is not null) ReleaseJob(item);
+        foreach (var removed in snapshot.Where(i => i.Removed && i.Job is not null)) ReleaseJob(removed);
+        var cached = snapshot.Where(i => i.Job is not null && !i.Removed).ToList();
+        var total = cached.Sum(i => i.Job!.EstimatedBytes);
+        foreach (var item in cached.OrderBy(i => i.LastUsed))
+        {
+            if (total <= CacheBudget) break;
+            if (ReferenceEquals(item, _selected)) continue;
+            total -= item.Job!.EstimatedBytes;
+            ReleaseJob(item);
+        }
     }
 
     static void ReleaseJob(TraceItem item)
     {
         item.Job?.Dispose();
         item.Job = null;
-        item.PhotoSent = false;
+        item.PhotoVisit = -1;
         item.PreviewVersion = -1;
     }
 
