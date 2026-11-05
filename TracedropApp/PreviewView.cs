@@ -1,6 +1,6 @@
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
-using Tracedrop.Core;
+using Tracedrop.Core.Editing;
 using Tracedrop.Core.Vector;
 
 namespace TracedropApp;
@@ -20,31 +20,39 @@ enum PreviewMode
 }
 
 /// <summary>
-/// The big preview: picture plus traced vector, with wheel zoom, drag to pan, double-click to fit.
-/// A click (without dragging) reports a pick: left = keep that shape, right = drop it.
+/// The canvas: the picture with the AI's lines and your own on top, and the editing tools (select, edit points,
+/// pen, Find lines, Erase lines, hand). Wheel zooms, Space or the middle button pans, double-click on empty
+/// space fits. Edits are reported through <see cref="EditCommitted"/>; the owner keeps undo and re-traces.
+/// This file is the view and drawing; PreviewView.Editing.cs has the tools.
 /// </summary>
-sealed class PreviewView : Control
+sealed partial class PreviewView : Control
 {
+    /// <summary>A traced (AI) path with its points in drawing pixels, for drawing and hit testing.</summary>
+    sealed record Traced(int Index, VectorPath Path, PointF[] Points, RectangleF Bounds);
+
     Bitmap? _photo;
     Bitmap? _prepared;
     Bitmap? _detected;
     VectorDrawing? _drawing;
+    SizeF _drawingSize;
     GraphicsPath? _outlines;
     GraphicsPath? _holes;
     GraphicsPath? _strokes;
-    IReadOnlyList<PickPoint> _picks = Array.Empty<PickPoint>();
+    readonly List<Traced> _traced = new();
     PreviewMode _mode = PreviewMode.Result;
 
     double _scale = 1;
     PointF _offset;
     bool _fitted = true;
-    Point _downAt;
-    PointF _downOffset;
-    MouseButtons _downButton;
-    bool _panning;
     string? _busyText;
     readonly System.Windows.Forms.Timer _spinner = new() { Interval = 60 };
     int _spinPhase;
+
+    static readonly Color FindColor = Color.FromArgb(0, 150, 136);
+    static readonly Color EraseColor = Color.FromArgb(214, 64, 64);
+    static readonly Color AiInk = Color.FromArgb(214, 32, 61);
+    static readonly Color HoleInk = Color.FromArgb(150, 52, 168);
+    static readonly Color MineInk = Palette.Accent;
 
     public PreviewView()
     {
@@ -54,30 +62,7 @@ sealed class PreviewView : Control
         _spinner.Tick += (_, _) => { _spinPhase = (_spinPhase + 1) % 12; Invalidate(new Rectangle(0, 0, Width, this.Px(48))); };
     }
 
-    /// <summary>A click (or, for Focus, a dragged circle) on the picture. Coordinates are 0..1 of the picture.</summary>
-    public event Action<PickPoint>? PickRequested;
-
-    /// <summary>A click on an existing marker: remove that pick (index into the picks given to SetDrawing).</summary>
-    public event Action<int>? PickRemoveRequested;
-
-    /// <summary>What a left click does. Right click always removes.</summary>
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public PickKind Tool
-    {
-        get => _tool;
-        set { _tool = value; Invalidate(); }
-    }
-
-    /// <summary>Size of a clicked Focus circle, as a fraction of the picture's longest side (dragging sets it; Ctrl+scroll changes it).</summary>
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public double FocusRadius { get; set; } = PickPoint.DefaultAddRadius;
-
-    PickKind _tool = PickKind.Keep;
-    bool _circling;
-    Point? _hoverAt;
-    SizeF _drawingSize;
-
-    /// <summary>Width/height of the picture the vector coordinates refer to.</summary>
+    /// <summary>Width/height of the picture on screen (the photo); edits use 0..1 of it.</summary>
     public Size PictureSize { get; private set; }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -135,38 +120,67 @@ sealed class PreviewView : Control
         Invalidate();
     }
 
-    public void SetDrawing(VectorDrawing? drawing, IReadOnlyList<PickPoint> picks)
+    /// <summary>The traced drawing (your own paths are drawn from the edits, not from here).</summary>
+    public void SetDrawing(VectorDrawing? drawing)
     {
-        _picks = picks;
-        if (!ReferenceEquals(drawing, _drawing))
+        if (ReferenceEquals(drawing, _drawing)) return;
+        _drawing = drawing;
+        _drawingSize = drawing is null ? SizeF.Empty : new SizeF((float)drawing.Width, (float)drawing.Height);
+        _traced.Clear();
+        _selAi.Clear();
+        _hiddenAi.Clear();
+        _hoverAi = -1;
+        if (drawing is not null)
         {
-            _drawing = drawing;
-            _drawingSize = drawing is null ? SizeF.Empty : new SizeF((float)drawing.Width, (float)drawing.Height);
-            _outlines?.Dispose(); _holes?.Dispose(); _strokes?.Dispose();
-            _outlines = _holes = _strokes = null;
-            if (drawing is not null)
+            for (var i = 0; i < drawing.Paths.Count; i++)
             {
-                _outlines = new GraphicsPath(FillMode.Alternate);
-                _holes = new GraphicsPath(FillMode.Alternate);
-                _strokes = new GraphicsPath(FillMode.Alternate);
-                foreach (var p in drawing.Paths)
-                {
-                    var points = p.Flatten(0.35).Select(v => new PointF((float)v.X, (float)v.Y)).ToArray();
-                    if (points.Length < 2) continue;
-                    var target = p.Role switch { PathRole.Hole => _holes, PathRole.Stroke => _strokes, _ => _outlines };
-                    target.StartFigure();
-                    target.AddLines(points);
-                    if (p.Closed || p.Circle is not null) target.CloseFigure();
-                }
+                var p = drawing.Paths[i];
+                if (p.IsManual) continue;
+                var points = p.Flatten(0.35).Select(v => new PointF((float)v.X, (float)v.Y)).ToArray();
+                if (points.Length < 2) continue;
+                if (p.Closed || p.Circle is not null) points = points.Append(points[0]).ToArray();
+                var minX = points.Min(q => q.X);
+                var minY = points.Min(q => q.Y);
+                _traced.Add(new Traced(i, p, points, RectangleF.FromLTRB(minX, minY, points.Max(q => q.X), points.Max(q => q.Y))));
             }
         }
+        RebuildTracedPaths();
+        SelectionChanged?.Invoke();
+        Invalidate();
+    }
+
+    /// <summary>Builds the drawing's outlines, holes and lines for painting, leaving out hidden (just deleted) paths.</summary>
+    void RebuildTracedPaths()
+    {
+        _outlines?.Dispose(); _holes?.Dispose(); _strokes?.Dispose();
+        _outlines = new GraphicsPath(FillMode.Alternate);
+        _holes = new GraphicsPath(FillMode.Alternate);
+        _strokes = new GraphicsPath(FillMode.Alternate);
+        foreach (var t in _traced)
+        {
+            if (_hiddenAi.Contains(t.Index)) continue;
+            var target = t.Path.Role switch { PathRole.Hole => _holes, PathRole.Stroke => _strokes, _ => _outlines };
+            target.StartFigure();
+            target.AddLines(t.Points);
+        }
+    }
+
+    /// <summary>Hides traced paths at once (deleted or taken over); the re-trace confirms it a moment later.</summary>
+    void HideTraced(IEnumerable<int> indices)
+    {
+        foreach (var i in indices) _hiddenAi.Add(i);
+        if (_hiddenAi.Contains(_hoverAi)) _hoverAi = -1;
+        _selAi.ExceptWith(_hiddenAi);
+        RebuildTracedPaths();
         Invalidate();
     }
 
     public void Clear()
     {
+        CancelPen();
         SetPictures(null, null, null);
-        SetDrawing(null, Array.Empty<PickPoint>());
+        SetDrawing(null);
+        SetEdits(EditState.Empty);
         BusyText = null;
     }
 
@@ -186,7 +200,42 @@ sealed class PreviewView : Control
         _offset = new PointF((float)((Width - PictureSize.Width * _scale) / 2), (float)((Height - PictureSize.Height * _scale) / 2));
     }
 
-    PointF ToPicture(Point p) => new((float)((p.X - _offset.X) / _scale), (float)((p.Y - _offset.Y) / _scale));
+    // ------------------------------------------------------------------ coordinates
+    // Screen: control pixels. Picture: photo pixels. Norm: 0..1 of the picture (edits). Drawing: traced pixels.
+
+    PointF ToPicture(PointF p) => new((float)((p.X - _offset.X) / _scale), (float)((p.Y - _offset.Y) / _scale));
+
+    PointF PictureToScreen(double x, double y) => new((float)(_offset.X + x * _scale), (float)(_offset.Y + y * _scale));
+
+    PointF NormToScreen(NormPoint n) => PictureToScreen(n.X * PictureSize.Width, n.Y * PictureSize.Height);
+
+    NormPoint ScreenToNorm(PointF p)
+    {
+        var q = ToPicture(p);
+        return new NormPoint(q.X / (double)PictureSize.Width, q.Y / (double)PictureSize.Height);
+    }
+
+    float DrawingScaleX => _drawingSize.Width > 0 ? PictureSize.Width / _drawingSize.Width : 1f;
+    float DrawingScaleY => _drawingSize.Height > 0 ? PictureSize.Height / _drawingSize.Height : 1f;
+
+    PointF ScreenToDrawing(PointF p)
+    {
+        var q = ToPicture(p);
+        return new PointF(q.X / DrawingScaleX, q.Y / DrawingScaleY);
+    }
+
+    PointF DrawingToScreen(PointF d) => PictureToScreen(d.X * DrawingScaleX, d.Y * DrawingScaleY);
+
+    /// <summary>A size given as a fraction of the picture's longest side, on screen.</summary>
+    float FractionToScreen(double fraction) => (float)(fraction * Math.Max(PictureSize.Width, PictureSize.Height) * _scale);
+
+    double ScreenToFraction(double pixels) => pixels / Math.Max(1e-9, Math.Max(PictureSize.Width, PictureSize.Height) * _scale);
+
+    bool OnPicture(PointF screen)
+    {
+        var p = ToPicture(screen);
+        return p.X >= 0 && p.Y >= 0 && p.X <= PictureSize.Width && p.Y <= PictureSize.Height;
+    }
 
     protected override void OnResize(EventArgs e)
     {
@@ -195,6 +244,8 @@ sealed class PreviewView : Control
     }
 
     protected override void OnPaintBackground(PaintEventArgs pevent) { }
+
+    // ------------------------------------------------------------------ painting
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -245,100 +296,214 @@ sealed class PreviewView : Control
             g.DrawImage(picture, dest);
         }
 
-        if (_mode is PreviewMode.Result or PreviewMode.Lines && _drawing is not null)
-        {
-            var state = g.Save();
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TranslateTransform(_offset.X, _offset.Y);
-            // The drawing's own pixel size may differ from the photo on screen (another Resolution, or a photo
-            // still on its way): scale it onto the picture so the two always line up.
-            var kx = _drawingSize.Width > 0 ? PictureSize.Width / _drawingSize.Width : 1f;
-            var ky = _drawingSize.Height > 0 ? PictureSize.Height / _drawingSize.Height : 1f;
-            g.ScaleTransform((float)_scale * kx, (float)_scale * ky);
-            var width = (float)(Math.Max(1.4, this.Px(2) * 0.9) / (_scale * kx));
-            var ink = _mode == PreviewMode.Lines ? Palette.Ink : Color.FromArgb(214, 32, 61);
-            using (var pen = new Pen(ink, width) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
-            {
-                if (_outlines is not null) g.DrawPath(pen, _outlines);
-                if (_strokes is not null) g.DrawPath(pen, _strokes);
-            }
-            using (var holePen = new Pen(Color.FromArgb(18, 110, 190), width) { LineJoin = LineJoin.Round })
-            {
-                if (_holes is not null) g.DrawPath(holePen, _holes);
-            }
-            g.Restore(state);
-        }
-
-        DrawPicks(g);
+        g.PixelOffsetMode = PixelOffsetMode.Default;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        DrawRegions(g);
+        if (_mode is PreviewMode.Result or PreviewMode.Lines) DrawTraced(g);
+        DrawMine(g);
+        DrawToolOverlay(g);
         DrawBusy(g);
     }
 
-    static readonly Color FocusColor = Color.FromArgb(0, 150, 136);
+    float LineWidth => Math.Max(1.4f, this.Px(2) * 0.9f);
 
-    PointF ToScreen(double px, double py) =>
-        new((float)(_offset.X + px * PictureSize.Width * _scale), (float)(_offset.Y + py * PictureSize.Height * _scale));
+    static Pen RoundPen(Color color, float width) =>
+        new(color, width) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
 
-    float ScreenRadius(double fraction) => (float)(fraction * Math.Max(PictureSize.Width, PictureSize.Height) * _scale);
-
-    int MarkerRadius => this.Px(8);
-
-    void DrawPicks(Graphics g)
+    void DrawTraced(Graphics g)
     {
-        if (PictureSize.IsEmpty) return;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var r = MarkerRadius;
-        foreach (var p in _picks)
+        if (_drawing is null) return;
+        var state = g.Save();
+        g.TranslateTransform(_offset.X, _offset.Y);
+        // The drawing's own pixel size may differ from the photo on screen (another Resolution, or a photo still
+        // on its way): scale it onto the picture so the two always line up.
+        var kx = DrawingScaleX;
+        var ky = DrawingScaleY;
+        g.ScaleTransform((float)_scale * kx, (float)_scale * ky);
+        var width = (float)(LineWidth / (_scale * kx));
+        var ink = _mode == PreviewMode.Lines ? Palette.Ink : AiInk;
+        using (var pen = RoundPen(ink, width))
         {
-            var c = ToScreen(p.X, p.Y);
-            if (p.Kind == PickKind.Add)
-            {
-                var rr = ScreenRadius(p.Radius > 0 ? p.Radius : PickPoint.DefaultAddRadius);
-                using var halo = new Pen(Color.FromArgb(150, Color.White), Math.Max(3f, this.Px(4)));
-                using var dash = new Pen(FocusColor, Math.Max(1.5f, this.Px(2))) { DashPattern = new[] { 4f, 3f } };
-                g.DrawEllipse(halo, c.X - rr, c.Y - rr, 2 * rr, 2 * rr);
-                g.DrawEllipse(dash, c.X - rr, c.Y - rr, 2 * rr, 2 * rr);
-            }
-            var color = p.Kind switch { PickKind.Keep => Palette.Accent, PickKind.Remove => Palette.Red, _ => FocusColor };
-            using var fill = new SolidBrush(color);
-            using var ring = new Pen(Color.White, Math.Max(2f, this.Px(2)));
-            g.FillEllipse(fill, c.X - r, c.Y - r, 2 * r, 2 * r);
-            g.DrawEllipse(ring, c.X - r, c.Y - r, 2 * r, 2 * r);
-            using var mark = new Pen(Color.White, Math.Max(1.5f, this.Px(2))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            var s = r * 0.45f;
-            switch (p.Kind)
-            {
-                case PickKind.Keep: g.DrawLines(mark, new[] { new PointF(c.X - s, c.Y), new PointF(c.X - s * 0.2f, c.Y + s * 0.8f), new PointF(c.X + s, c.Y - s * 0.7f) }); break;
-                case PickKind.Remove: g.DrawLine(mark, c.X - s, c.Y - s, c.X + s, c.Y + s); g.DrawLine(mark, c.X - s, c.Y + s, c.X + s, c.Y - s); break;
-                default: g.DrawLine(mark, c.X - s, c.Y, c.X + s, c.Y); g.DrawLine(mark, c.X, c.Y - s, c.X, c.Y + s); break;
-            }
+            if (_outlines is not null) g.DrawPath(pen, _outlines);
+            if (_strokes is not null) g.DrawPath(pen, _strokes);
         }
-
-        // The Focus tool shows the circle it will make: following the mouse, or being dragged out.
-        if (_tool == PickKind.Add && (_circling || _hoverAt is not null))
+        using (var holePen = RoundPen(HoleInk, width))
         {
-            var centre = _circling ? _downAt : _hoverAt!.Value;
-            var rr = _circling ? DragRadius(_lastMove) : ScreenRadius(FocusRadius);
-            // Being dragged: full colour. Just following the mouse: a faint hint of the size a click would make.
-            var color = _circling ? FocusColor : Color.FromArgb(110, FocusColor);
-            using var pen = new Pen(color, _circling ? Math.Max(1.5f, this.Px(2)) : 1f) { DashPattern = new[] { 2f, 2f } };
-            g.DrawEllipse(pen, centre.X - rr, centre.Y - rr, 2 * rr, 2 * rr);
+            if (_holes is not null) g.DrawPath(holePen, _holes);
+        }
+        g.Restore(state);
+
+        // Hover and selection.
+        if (_hoverAi >= 0 && !_selAi.Contains(_hoverAi) && _traced.FirstOrDefault(t => t.Index == _hoverAi) is { } hover)
+        {
+            using var hoverPen = RoundPen(Color.FromArgb(150, Palette.Accent), LineWidth + this.Px(2));
+            DrawPolyline(g, hoverPen, hover.Points);
+        }
+        if (_selAi.Count > 0)
+        {
+            using var glow = RoundPen(Color.FromArgb(70, Palette.Accent), LineWidth + this.Px(6));
+            using var line = RoundPen(Palette.Accent, LineWidth + this.Px(1));
+            foreach (var t in _traced.Where(t => _selAi.Contains(t.Index)))
+            {
+                DrawPolyline(g, glow, t.Points);
+                DrawPolyline(g, line, t.Points);
+            }
         }
     }
 
-    Point _lastMove;
-
-    float DragRadius(Point to) => (float)Math.Max(this.Px(6), Math.Sqrt(Math.Pow(to.X - _downAt.X, 2) + Math.Pow(to.Y - _downAt.Y, 2)));
-
-    /// <summary>Index of the pick marker under a screen point, or -1.</summary>
-    int MarkerAt(Point at)
+    void DrawPolyline(Graphics g, Pen pen, PointF[] drawingPoints)
     {
-        var hit = MarkerRadius + this.Px(3);
-        for (var i = _picks.Count - 1; i >= 0; i--)
+        if (drawingPoints.Length < 2) return;
+        g.DrawLines(pen, drawingPoints.Select(DrawingToScreen).ToArray());
+    }
+
+    /// <summary>Your own paths, in blue: with their points when selected or being edited.</summary>
+    void DrawMine(Graphics g)
+    {
+        for (var i = 0; i < _edit.Manual.Count; i++)
         {
-            var c = ToScreen(_picks[i].X, _picks[i].Y);
-            if ((c.X - at.X) * (c.X - at.X) + (c.Y - at.Y) * (c.Y - at.Y) <= hit * hit) return i;
+            var path = _edit.Manual[i];
+            using var gp = ScreenPath(path);
+            if (gp is null) continue;
+            var selected = _selOwn.Contains(i) || (i == _active && _tool == EditTool.Points);
+            if (selected)
+            {
+                using var glow = RoundPen(Color.FromArgb(60, MineInk), LineWidth + this.Px(6));
+                g.DrawPath(glow, gp);
+            }
+            else if (i == _hoverOwn)
+            {
+                using var hover = RoundPen(Color.FromArgb(90, MineInk), LineWidth + this.Px(4));
+                g.DrawPath(hover, gp);
+            }
+            using var pen = RoundPen(MineInk, LineWidth + (selected ? this.Px(1) : 0));
+            g.DrawPath(pen, gp);
+            if (i == _active && _tool == EditTool.Points) DrawNodes(g, path, handles: true, _activeNode);
+            else if (_selOwn.Contains(i)) DrawNodes(g, path, handles: false, -1);
         }
-        return -1;
+    }
+
+    GraphicsPath? ScreenPath(ManualPath path)
+    {
+        if (path.Nodes.Count < 2) return null;
+        var gp = new GraphicsPath();
+        var count = path.Closed ? path.Nodes.Count : path.Nodes.Count - 1;
+        for (var k = 0; k < count; k++)
+        {
+            var a = path.Nodes[k];
+            var b = path.Nodes[(k + 1) % path.Nodes.Count];
+            var p0 = NormToScreen(a.Point);
+            var p3 = NormToScreen(b.Point);
+            if (a.Out is null && b.In is null) gp.AddLine(p0, p3);
+            else gp.AddBezier(p0, NormToScreen(a.Out ?? a.Point), NormToScreen(b.In ?? b.Point), p3);
+        }
+        if (path.Closed) gp.CloseFigure();
+        return gp;
+    }
+
+    int AnchorSize => this.Px(8);
+    int HandleSize => this.Px(7);
+
+    void DrawNodes(Graphics g, ManualPath path, bool handles, int selectedNode)
+    {
+        using var handleLine = new Pen(Color.FromArgb(190, MineInk), 1f);
+        using var white = new SolidBrush(Color.White);
+        using var outline = new Pen(MineInk, Math.Max(1.2f, this.Px(1) * 1.2f));
+        using var fill = new SolidBrush(MineInk);
+        var showAllHandles = path.Nodes.Count <= 60;
+        for (var i = 0; i < path.Nodes.Count; i++)
+        {
+            var n = path.Nodes[i];
+            var c = NormToScreen(n.Point);
+            var near = selectedNode >= 0 && (Math.Abs(i - selectedNode) <= 1 || (path.Closed && Math.Abs(i - selectedNode) == path.Nodes.Count - 1));
+            if (handles && (showAllHandles || near))
+            {
+                foreach (var hnd in new[] { n.In, n.Out })
+                {
+                    if (hnd is null) continue;
+                    var hp = NormToScreen(hnd);
+                    g.DrawLine(handleLine, c, hp);
+                    var r = HandleSize / 2f;
+                    g.FillEllipse(white, hp.X - r, hp.Y - r, 2 * r, 2 * r);
+                    g.DrawEllipse(outline, hp.X - r, hp.Y - r, 2 * r, 2 * r);
+                }
+            }
+            var a = AnchorSize / 2f;
+            var box = new RectangleF(c.X - a, c.Y - a, 2 * a, 2 * a);
+            g.FillRectangle(i == selectedNode ? fill : white, box);
+            g.DrawRectangle(outline, box.X, box.Y, box.Width, box.Height);
+        }
+    }
+
+    void DrawRegions(Graphics g)
+    {
+        for (var i = 0; i < _edit.Regions.Count; i++)
+        {
+            var r = _edit.Regions[i];
+            if (r.Kind == RegionKind.Suppress) continue;
+            DrawRegion(g, r, i == _selRegion, i == _hoverRegion);
+        }
+    }
+
+    void DrawRegion(Graphics g, GuideRegion r, bool selected, bool hover, bool preview = false)
+    {
+        var color = r.Kind == RegionKind.Find ? FindColor : EraseColor;
+        var fillAlpha = preview ? 30 : selected || hover ? 56 : 34;
+        using var fill = new SolidBrush(Color.FromArgb(fillAlpha, color));
+        using var outline = new Pen(Color.FromArgb(selected ? 255 : 200, color), selected ? Math.Max(2f, this.Px(2)) : Math.Max(1.2f, this.Px(1) * 1.4f))
+        {
+            DashPattern = new[] { 4f, 3f }
+        };
+        RectangleF bounds;
+        switch (r.Shape)
+        {
+            case RegionShape.Circle when r.Points.Count > 0:
+            {
+                var c = NormToScreen(r.Points[0]);
+                var radius = FractionToScreen(r.Size);
+                bounds = new RectangleF(c.X - radius, c.Y - radius, 2 * radius, 2 * radius);
+                g.FillEllipse(fill, bounds);
+                g.DrawEllipse(outline, bounds);
+                break;
+            }
+            case RegionShape.Rectangle when r.Points.Count > 1:
+            {
+                var a = NormToScreen(r.Points[0]);
+                var b = NormToScreen(r.Points[1]);
+                bounds = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+                g.FillRectangle(fill, bounds);
+                g.DrawRectangle(outline, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+                break;
+            }
+            case RegionShape.Brush when r.Points.Count > 0:
+            {
+                var pts = r.Points.Select(NormToScreen).ToArray();
+                var width = Math.Max(1, 2 * FractionToScreen(r.Size));
+                var alpha = preview ? 50 : selected || hover ? 80 : 60;
+                using var brush = RoundPen(Color.FromArgb(alpha, color), width);
+                using var dot = new SolidBrush(Color.FromArgb(alpha, color));
+                if (pts.Length == 1) g.FillEllipse(dot, pts[0].X - width / 2, pts[0].Y - width / 2, width, width);
+                else g.DrawLines(brush, pts);
+                bounds = RectangleF.FromLTRB(pts.Min(p => p.X) - width / 2, pts.Min(p => p.Y) - width / 2, pts.Max(p => p.X) + width / 2, pts.Max(p => p.Y) + width / 2);
+                break;
+            }
+            default:
+                return;
+        }
+
+        if (r.Kind == RegionKind.Find && !preview) DrawAmountBadge(g, r.Amount, new PointF(bounds.Right, bounds.Top), color);
+    }
+
+    void DrawAmountBadge(Graphics g, int amount, PointF corner, Color color)
+    {
+        var text = amount > 0 ? "+" + amount : amount < 0 ? "−" + -amount : "0";
+        var size = TextRenderer.MeasureText(g, text, UiFonts.CaptionStrong, Size.Empty, TextFormatFlags.NoPadding);
+        var pill = new RectangleF(corner.X - size.Width / 2f - this.Px(7), corner.Y - size.Height / 2f - this.Px(3), size.Width + this.Px(14), size.Height + this.Px(6));
+        using (var path = UiKit.RoundedRect(pill, pill.Height / 2))
+        using (var brush = new SolidBrush(color))
+            g.FillPath(brush, path);
+        TextRenderer.DrawText(g, text, UiFonts.CaptionStrong, Rectangle.Round(pill), Color.White,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
 
     void DrawBusy(Graphics g)
@@ -388,7 +553,7 @@ sealed class PreviewView : Control
         var k = icon / 64f;
         float X(float x) => cx + x * k;
         float Y(float y) => top + icon / 2f + y * k;
-        using (var pen = new Pen(Palette.Accent, Math.Max(1.6f, 2.4f * k)) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
+        using (var pen = RoundPen(Palette.Accent, Math.Max(1.6f, 2.4f * k)))
         using (var fill = new SolidBrush(Palette.Accent))
         {
             using (var tank = UiKit.RoundedRect(new RectangleF(X(-11), Y(-15), 22 * k, 7 * k), 3 * k)) g.DrawPath(pen, tank);
@@ -403,121 +568,6 @@ sealed class PreviewView : Control
         TextRenderer.DrawText(g, EmptyBody, UiFonts.Small, new Rectangle((int)zone.Left + pad, y + this.Px(32), (int)zone.Width - 2 * pad, this.Px(40)), Palette.Muted, flags);
     }
 
-    protected override void OnMouseWheel(MouseEventArgs e)
-    {
-        base.OnMouseWheel(e);
-        if (PictureSize.IsEmpty) return;
-        if (_tool == PickKind.Add && (ModifierKeys & Keys.Control) != 0)
-        {
-            // Ctrl+scroll sizes the Focus circle.
-            FocusRadius = Math.Clamp(FocusRadius * Math.Pow(1.0012, e.Delta), 0.01, 0.45);
-            Invalidate();
-            return;
-        }
-        EnsureFit();
-        var before = ToPicture(e.Location);
-        var factor = Math.Pow(1.0015, e.Delta);
-        var fit = Math.Min(Width / (double)PictureSize.Width, Height / (double)PictureSize.Height);
-        _scale = Math.Clamp(_scale * factor, fit * 0.5, 40);
-        _offset = new PointF((float)(e.X - before.X * _scale), (float)(e.Y - before.Y * _scale));
-        _fitted = false;
-        Invalidate();
-    }
-
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        base.OnMouseDown(e);
-        Focus();
-        _downAt = e.Location;
-        _downButton = e.Button;
-        EnsureFit();
-        _downOffset = _offset;
-        _panning = false;
-        // With the Focus tool, a left drag that doesn't start on a marker draws the circle instead of panning.
-        _circling = _tool == PickKind.Add && e.Button == MouseButtons.Left && !PictureSize.IsEmpty && MarkerAt(e.Location) < 0;
-        _lastMove = e.Location;
-        Capture = true;
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        base.OnMouseMove(e);
-        if (_downButton == MouseButtons.None || PictureSize.IsEmpty)
-        {
-            Cursor = PictureSize.IsEmpty ? Cursors.Default : MarkerAt(e.Location) >= 0 ? Cursors.Hand : Cursors.Cross;
-            if (_tool == PickKind.Add) { _hoverAt = e.Location; Invalidate(); }
-            return;
-        }
-        if (_circling)
-        {
-            _lastMove = e.Location;
-            Invalidate();
-            return;
-        }
-        var dx = e.X - _downAt.X;
-        var dy = e.Y - _downAt.Y;
-        if (!_panning && dx * dx + dy * dy > this.Px(5) * this.Px(5)) _panning = true;
-        if (_panning)
-        {
-            Cursor = Cursors.SizeAll;
-            _offset = new PointF(_downOffset.X + dx, _downOffset.Y + dy);
-            _fitted = false;
-            Invalidate();
-        }
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        base.OnMouseUp(e);
-        Capture = false;
-        var wasPan = _panning;
-        var wasCircling = _circling;
-        var button = _downButton;
-        _downButton = MouseButtons.None;
-        _panning = false;
-        _circling = false;
-        Cursor = Cursors.Cross;
-        if (wasPan || PictureSize.IsEmpty) return;
-        if (button is not (MouseButtons.Left or MouseButtons.Right)) return;
-
-        if (wasCircling)
-        {
-            var dragged = DragRadius(e.Location) > this.Px(8);
-            if (dragged) FocusRadius = Math.Clamp(DragRadius(e.Location) / (Math.Max(PictureSize.Width, PictureSize.Height) * _scale), 0.01, 0.45);
-            var centre = ToPicture(_downAt);
-            if (centre.X < 0 || centre.Y < 0 || centre.X > PictureSize.Width || centre.Y > PictureSize.Height) { Invalidate(); return; }
-            PickRequested?.Invoke(new PickPoint(centre.X / PictureSize.Width, centre.Y / PictureSize.Height, PickKind.Add, FocusRadius));
-            return;
-        }
-
-        // Clicking a marker takes it away again.
-        var marker = MarkerAt(e.Location);
-        if (marker >= 0)
-        {
-            PickRemoveRequested?.Invoke(marker);
-            return;
-        }
-        var p = ToPicture(e.Location);
-        if (p.X < 0 || p.Y < 0 || p.X > PictureSize.Width || p.Y > PictureSize.Height) return;
-        var kind = button == MouseButtons.Right ? PickKind.Remove : _tool;
-        PickRequested?.Invoke(new PickPoint(p.X / PictureSize.Width, p.Y / PictureSize.Height, kind,
-            kind == PickKind.Add ? FocusRadius : 0));
-    }
-
-    protected override void OnMouseLeave(EventArgs e)
-    {
-        base.OnMouseLeave(e);
-        if (_hoverAt is null) return;
-        _hoverAt = null;
-        Invalidate();
-    }
-
-    protected override void OnDoubleClick(EventArgs e)
-    {
-        base.OnDoubleClick(e);
-        FitToView();
-    }
-
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -529,72 +579,4 @@ sealed class PreviewView : Control
         }
         base.Dispose(disposing);
     }
-}
-
-/// <summary>A pill you drag out of the window to drop the current picture's vector file anywhere.</summary>
-sealed class DragChip : Control
-{
-    bool _hover;
-    Point _downAt;
-    bool _down;
-
-    public DragChip()
-    {
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
-        Cursor = Cursors.Hand;
-        Text = "Drag DXF";
-        Size = new Size(132, 36);
-        AccessibleName = "Drag the vector file out of Tracedrop";
-    }
-
-    /// <summary>Asks the owner for the data to drag; null cancels.</summary>
-    public Func<DataObject?>? DataProvider { get; set; }
-
-    protected override void OnPaintBackground(PaintEventArgs pevent) { pevent.Graphics.Clear(Parent?.BackColor ?? Palette.Surface); }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
-        using (var path = UiKit.RoundedRect(r, r.Height / 2))
-        using (var brush = new SolidBrush(_hover ? Palette.AccentHover : Palette.Accent))
-            g.FillPath(brush, path);
-        // Arrow out of a tray.
-        var k = this.Px(1);
-        var x = this.Px(16);
-        var cy = Height / 2f;
-        using (var pen = new Pen(Color.White, Math.Max(1.6f, 1.8f * k)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
-        {
-            g.DrawLine(pen, x, cy + 4 * k, x, cy - 6 * k);
-            g.DrawLines(pen, new[] { new PointF(x - 4 * k, cy - 2 * k), new PointF(x, cy - 6 * k), new PointF(x + 4 * k, cy - 2 * k) });
-            g.DrawLines(pen, new[] { new PointF(x - 7 * k, cy + 1 * k), new PointF(x - 7 * k, cy + 7 * k), new PointF(x + 7 * k, cy + 7 * k), new PointF(x + 7 * k, cy + 1 * k) });
-        }
-        TextRenderer.DrawText(g, Text, UiFonts.BodyStrong, new Rectangle(this.Px(30), 0, Width - this.Px(36), Height), Color.White,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-    }
-
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left) return;
-        _down = true;
-        _downAt = e.Location;
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        base.OnMouseMove(e);
-        if (!_down) return;
-        var drag = SystemInformation.DragSize;
-        if (Math.Abs(e.X - _downAt.X) < drag.Width && Math.Abs(e.Y - _downAt.Y) < drag.Height) return;
-        _down = false;
-        var data = DataProvider?.Invoke();
-        if (data is not null) DoDragDrop(data, DragDropEffects.Copy);
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _down = false; }
-    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
 }

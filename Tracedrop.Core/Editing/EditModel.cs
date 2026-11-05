@@ -193,6 +193,148 @@ public sealed record ManualPath
     }
 }
 
+/// <summary>Node editing on user paths. Every method returns a new path; the input is not changed.</summary>
+public static class PathEdits
+{
+    static NormPoint Lerp(NormPoint a, NormPoint b, double t) => new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+    static NormPoint Add(NormPoint a, double dx, double dy) => new(a.X + dx, a.Y + dy);
+
+    /// <summary>Inserts a node on segment <paramref name="segment"/> (from node i to i+1) at parameter t, keeping the shape.</summary>
+    public static ManualPath InsertNode(ManualPath path, int segment, double t)
+    {
+        var nodes = path.Nodes.ToList();
+        var count = nodes.Count;
+        if (count < 2 || segment < 0 || segment >= (path.Closed ? count : count - 1)) return path;
+        t = Math.Clamp(t, 0.02, 0.98);
+        var a = nodes[segment];
+        var bi = (segment + 1) % count;
+        var b = nodes[bi];
+        ManualNode inserted;
+        if (a.Out is null && b.In is null)
+        {
+            inserted = new ManualNode(Lerp(a.Point, b.Point, t));
+        }
+        else
+        {
+            // de Casteljau split of the cubic.
+            var p0 = a.Point;
+            var c1 = a.Out ?? a.Point;
+            var c2 = b.In ?? b.Point;
+            var p3 = b.Point;
+            var q0 = Lerp(p0, c1, t);
+            var q1 = Lerp(c1, c2, t);
+            var q2 = Lerp(c2, p3, t);
+            var r0 = Lerp(q0, q1, t);
+            var r1 = Lerp(q1, q2, t);
+            inserted = new ManualNode(Lerp(r0, r1, t), r0, r1);
+            nodes[segment] = a with { Out = q0 };
+            nodes[bi] = b with { In = q2 };
+        }
+        nodes.Insert(segment + 1, inserted);
+        return path with { Nodes = nodes };
+    }
+
+    /// <summary>Removes node i. Returns null when fewer than two nodes would be left.</summary>
+    public static ManualPath? RemoveNode(ManualPath path, int i)
+    {
+        if (i < 0 || i >= path.Nodes.Count) return path;
+        if (path.Nodes.Count <= 2) return null;
+        var nodes = path.Nodes.ToList();
+        nodes.RemoveAt(i);
+        return path with { Nodes = nodes, Closed = path.Closed && nodes.Count > 2 };
+    }
+
+    /// <summary>Moves node i (and its handles) by (dx, dy).</summary>
+    public static ManualPath MoveNode(ManualPath path, int i, double dx, double dy)
+    {
+        var nodes = path.Nodes.ToList();
+        var n = nodes[i];
+        nodes[i] = new ManualNode(Add(n.Point, dx, dy), n.In is null ? null : Add(n.In, dx, dy), n.Out is null ? null : Add(n.Out, dx, dy));
+        return path with { Nodes = nodes };
+    }
+
+    /// <summary>Moves the whole path by (dx, dy).</summary>
+    public static ManualPath Move(ManualPath path, double dx, double dy)
+    {
+        var moved = path;
+        for (var i = 0; i < path.Nodes.Count; i++) moved = MoveNode(moved, i, dx, dy);
+        return moved;
+    }
+
+    /// <summary>
+    /// Sets a handle of node i. On a smooth node (both handles) the other handle turns to stay opposite, keeping its
+    /// length, unless <paramref name="independent"/> (Alt) is set.
+    /// </summary>
+    public static ManualPath SetHandle(ManualPath path, int i, bool outHandle, NormPoint to, bool independent, double aspect = 1)
+    {
+        var nodes = path.Nodes.ToList();
+        var n = nodes[i];
+        var other = outHandle ? n.In : n.Out;
+        NormPoint? mirrored = other;
+        if (!independent && other is not null)
+        {
+            // Directions are measured in picture pixels (aspect = width / height), so "opposite" looks opposite.
+            var dx = (to.X - n.Point.X) * aspect;
+            var dy = to.Y - n.Point.Y;
+            var len = Math.Sqrt(dx * dx + dy * dy);
+            var ox = (other.X - n.Point.X) * aspect;
+            var oy = other.Y - n.Point.Y;
+            var otherLen = Math.Sqrt(ox * ox + oy * oy);
+            if (len > 1e-9) mirrored = new NormPoint(n.Point.X - dx / len * otherLen / aspect, n.Point.Y - dy / len * otherLen);
+        }
+        nodes[i] = outHandle ? new ManualNode(n.Point, mirrored, to) : new ManualNode(n.Point, to, mirrored);
+        return path with { Nodes = nodes };
+    }
+
+    /// <summary>Corner ↔ smooth: drops both handles, or adds handles along the line through the neighbours.</summary>
+    public static ManualPath ToggleSmooth(ManualPath path, int i)
+    {
+        var nodes = path.Nodes.ToList();
+        var n = nodes[i];
+        if (n.In is not null || n.Out is not null)
+        {
+            nodes[i] = new ManualNode(n.Point);
+            return path with { Nodes = nodes };
+        }
+        var count = nodes.Count;
+        var prev = i > 0 ? nodes[i - 1].Point : path.Closed ? nodes[count - 1].Point : n.Point;
+        var next = i < count - 1 ? nodes[i + 1].Point : path.Closed ? nodes[0].Point : n.Point;
+        var dx = (next.X - prev.X) / 6;
+        var dy = (next.Y - prev.Y) / 6;
+        if (Math.Abs(dx) + Math.Abs(dy) < 1e-9) return path;
+        nodes[i] = new ManualNode(n.Point, Add(n.Point, -dx, -dy), Add(n.Point, dx, dy));
+        return path with { Nodes = nodes };
+    }
+
+    /// <summary>
+    /// Closest point on the path to <paramref name="target"/> (all in picture pixels): segment index, parameter and
+    /// distance.
+    /// </summary>
+    public static (int Segment, double T, double Distance) Closest(ManualPath path, double width, double height, Vec2 target)
+    {
+        var best = (-1, 0.0, double.MaxValue);
+        var count = path.Closed ? path.Nodes.Count : path.Nodes.Count - 1;
+        for (var i = 0; i < count; i++)
+        {
+            var a = path.Nodes[i];
+            var b = path.Nodes[(i + 1) % path.Nodes.Count];
+            var p0 = a.Point.ToPixels(width, height);
+            var p3 = b.Point.ToPixels(width, height);
+            var cubic = a.Out is null && b.In is null
+                ? null
+                : new CubicSegment(p0, (a.Out ?? a.Point).ToPixels(width, height), (b.In ?? b.Point).ToPixels(width, height), p3);
+            const int steps = 48;
+            for (var j = 0; j <= steps; j++)
+            {
+                var t = j / (double)steps;
+                var d = Vec2.Distance(cubic?.At(t) ?? Vec2.Lerp(p0, p3, t), target);
+                if (d < best.Item3) best = (i, t, d);
+            }
+        }
+        return best;
+    }
+}
+
 /// <summary>Geometry helpers for applying edits to traced paths.</summary>
 public static class EditGeometry
 {

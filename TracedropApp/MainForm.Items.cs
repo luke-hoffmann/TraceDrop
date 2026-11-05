@@ -218,12 +218,43 @@ sealed partial class MainForm
             BrowseForPictures();
             e.Handled = e.SuppressKeyPress = true;
         }
-        else if (e.KeyCode == Keys.F && ActiveControl is PreviewView)
+        else if (e.Control && e.KeyCode is Keys.D0 or Keys.NumPad0)
         {
             _preview.FitToView();
-            e.Handled = true;
+            e.Handled = e.SuppressKeyPress = true;
+        }
+        else if (e.Control && !e.Shift && e.KeyCode == Keys.Z && !TypingInBox())
+        {
+            UndoEdit();
+            e.Handled = e.SuppressKeyPress = true;
+        }
+        else if (e.Control && (e.KeyCode == Keys.Y || (e.Shift && e.KeyCode == Keys.Z)) && !TypingInBox())
+        {
+            RedoEdit();
+            e.Handled = e.SuppressKeyPress = true;
+        }
+        else if (!e.Control && !e.Alt && !TypingInBox() && _items.Count > 0 && ToolForKey(e.KeyCode) is { } tool)
+        {
+            _preview.Tool = tool;
+            _palette.Selected = tool;
+            UpdateEditorBar();
+            if (ActiveControl is not ListView) _preview.Focus();
+            e.Handled = e.SuppressKeyPress = true;
         }
     }
+
+    bool TypingInBox() => ActiveControl is TextBoxBase or NumericUpDown or ComboBox || (ActiveControl is ListView && _list.LabelEdit);
+
+    static EditTool? ToolForKey(Keys key) => key switch
+    {
+        Keys.V => EditTool.Select,
+        Keys.A => EditTool.Points,
+        Keys.P => EditTool.Pen,
+        Keys.F => EditTool.Find,
+        Keys.E => EditTool.Erase,
+        Keys.H => EditTool.Hand,
+        _ => null
+    };
 
     void Paste()
     {
@@ -293,9 +324,7 @@ sealed partial class MainForm
     static bool SameSettings(TraceSettings a, TraceSettings? b)
     {
         if (b is null) return false;
-        var x = a.Clone(); x.Picks = new();
-        var y = b.Clone(); y.Picks = new();
-        return x.ToJson() == y.ToJson();
+        return a.WithoutEdits().ToJson() == b.WithoutEdits().ToJson();
     }
 
     /// <summary>Refreshes the preview, stats and drag chip for the shown picture.</summary>
@@ -305,23 +334,26 @@ sealed partial class MainForm
         {
             _preview.Clear();
             _statsLabel.Text = "";
-            _clearPicksLink.Visible = false;
+            UpdateEditorBar();
             UpdateDragChip();
             return;
         }
         if (item.Photo is not null) _preview.SetPictures(item.Photo, item.Prepared, item.Detected);
         else if (item.Result is { } done) _preview.SetPlaceholder(new Size(done.Width, done.Height)); // already traced: show it now
-        List<PickPoint> picks;
-        lock (item.Gate) picks = item.Settings.Picks.ToList();
-        _preview.SetDrawing(item.Result?.Drawing, picks);
+        EditState edits;
+        lock (item.Gate) edits = EditState.From(item.Settings);
+        _preview.SetDrawing(item.Result?.Drawing);
+        _preview.SetEdits(edits);
         _preview.BusyText = item.State == ItemState.Tracing || (item.Result is null && item.State != ItemState.Failed) ? "Tracing…" : null;
-        _clearPicksLink.Visible = picks.Count > 0;
         _statsLabel.ForeColor = item.Error is null ? Palette.Muted : Palette.Red;
         _statsLabel.Text = item.Error ?? Stats(item);
         _preview.EmptyTitle = item.Error is null ? "Drop pictures here" : "Couldn't trace this picture";
         _preview.EmptyBody = item.Error ?? "PNG, JPEG, HEIC, WebP, TIFF and more. Or paste with Ctrl+V.";
+        UpdateEditorBar();
         UpdateDragChip();
     }
+
+    static string Count(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
 
     static string Stats(TraceItem item)
     {
@@ -330,8 +362,8 @@ sealed partial class MainForm
         var units = r.InUnits();
         var parts = new List<string>
         {
-            d.OpenCount > 0 && d.ClosedCount > 0 ? $"{d.ClosedCount} shapes, {d.OpenCount} lines"
-                : d.OpenCount > 0 ? $"{d.OpenCount} lines" : $"{d.ClosedCount} shapes",
+            d.OpenCount > 0 && d.ClosedCount > 0 ? $"{Count(d.ClosedCount, "shape")}, {Count(d.OpenCount, "line")}"
+                : d.OpenCount > 0 ? Count(d.OpenCount, "line") : Count(d.ClosedCount, "shape"),
             $"{d.EntityCount} entities",
             $"{Format.Size(units.Width, r.Settings.Units)} × {Format.Size(units.Height, r.Settings.Units)}",
             Format.Duration(r.Elapsed)
@@ -341,51 +373,64 @@ sealed partial class MainForm
         return text;
     }
 
-    void Preview_PickRequested(PickPoint pick)
+    /// <summary>An edit on the canvas: remember it for undo, give it to the picture, re-trace.</summary>
+    void Preview_EditCommitted(EditState before, EditState after, object? tag)
     {
-        var item = PrimaryItem();
-        if (item is null || item.Result is null) return;
-        lock (item.Gate)
-        {
-            item.Settings.Picks.Add(pick);
-            item.Version++;
-        }
-        _worker.Signal(item);
-        ShowItem(item);
+        var item = _shown;
+        if (item is null) return;
+        item.History.Record(before, tag);
+        SetItemEdits(item, after);
     }
 
-    void Preview_PickRemoveRequested(int index)
+    void SetItemEdits(TraceItem item, EditState edits)
     {
-        var item = PrimaryItem();
-        if (item is null) return;
         lock (item.Gate)
         {
-            if (index < 0 || index >= item.Settings.Picks.Count) return;
-            item.Settings.Picks.RemoveAt(index);
+            edits.ApplyTo(item.Settings);
             item.Version++;
         }
         _worker.Signal(item);
-        ShowItem(item);
+        if (ReferenceEquals(item, _shown))
+        {
+            _preview.SetEdits(edits);
+            _preview.BusyText = "Tracing…";
+        }
+        UpdateEditorBar();
     }
 
-    void ClearPicks()
+    EditState CurrentEdits(TraceItem item)
     {
-        var item = PrimaryItem();
-        if (item is null) return;
-        lock (item.Gate)
-        {
-            if (item.Settings.Picks.Count == 0) return;
-            item.Settings.Picks.Clear();
-            item.Version++;
-        }
-        _worker.Signal(item);
-        ShowItem(item);
+        lock (item.Gate) return EditState.From(item.Settings);
+    }
+
+    void UndoEdit()
+    {
+        if (_shown is not { } item) return;
+        if (_preview.IsDrawingPath) { _preview.CancelPen(); return; }
+        if (item.History.Undo(CurrentEdits(item)) is { } previous) SetItemEdits(item, previous);
+    }
+
+    void RedoEdit()
+    {
+        if (_shown is not { } item) return;
+        if (item.History.Redo(CurrentEdits(item)) is { } next) SetItemEdits(item, next);
+    }
+
+    /// <summary>Removes every edit of the shown picture (undoable).</summary>
+    void ClearEdits()
+    {
+        if (_shown is not { } item) return;
+        var current = CurrentEdits(item);
+        if (current.IsEmpty) return;
+        item.History.Record(current);
+        SetItemEdits(item, new EditState());
     }
 
     void UpdateEmptyState()
     {
         _listHint.Visible = _items.Count > 0;
-        _toolRow.Visible = _items.Count > 0;
+        _optionsBar.Visible = _items.Count > 0;
+        _palette.Visible = _items.Count > 0;
         if (_items.Count == 0) ShowItem(null);
         Text = _items.Count > 0 ? $"Tracedrop ({_items.Count})" : "Tracedrop";
         UpdateActionStates();
@@ -530,7 +575,7 @@ sealed partial class MainForm
         {
             var d = item.Result.Drawing;
             var units = item.Result.InUnits();
-            var shapes = d.OpenCount >= d.ClosedCount && d.OpenCount > 0 ? $"{d.OpenCount} lines" : $"{d.ClosedCount} shapes";
+            var shapes = d.OpenCount >= d.ClosedCount && d.OpenCount > 0 ? Count(d.OpenCount, "line") : Count(d.ClosedCount, "shape");
             var formats = string.Join(" ", item.Outputs.Keys.OrderBy(k => k).Select(k => Exporters.Extension(k).TrimStart('.').ToUpperInvariant()));
             status = $"{formats}  ·  {shapes}  ·  {Format.Size(Math.Max(units.Width, units.Height), item.Result.Settings.Units)}";
         }

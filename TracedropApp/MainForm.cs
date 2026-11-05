@@ -38,16 +38,27 @@ sealed partial class MainForm : Form
     readonly Segmented _viewMode = new(null, "Result", "Lines", "Detected", "Prepared", "Original");
     readonly DragChip _dragChip = new();
     readonly Label _statsLabel = NewLabel("", UiFonts.Small, Palette.Muted);
-    readonly LinkLabel _clearPicksLink = new();
-    readonly Panel _toolRow = new() { Dock = DockStyle.Bottom, Height = 40 };
-    readonly Segmented _pickTool = new(null, "Keep only", "Remove", "Focus area");
-    readonly Label _pickHint = NewLabel("", UiFonts.Caption, Palette.Muted);
+    readonly LinkLabel _clearEditsLink = new();
 
-    static readonly string[] ToolHints =
+    // Editor
+    readonly ToolPalette _palette = new();
+    readonly Panel _optionsBar = new() { Dock = DockStyle.Top, Height = 44 };
+    readonly Segmented _areaShape = new(null, "Circle", "Rectangle", "Brush");
+    readonly RoundedButton _editPointsButton = new("Edit points", ButtonKind.Secondary, 112);
+    readonly RoundedButton _deleteButton = new("Delete", ButtonKind.Secondary, 84);
+    readonly RoundedButton _keepOnlyButton = new("Keep only", ButtonKind.Secondary, 100);
+    readonly IconButton _undoButton = new(Glyph.Undo, "Undo (Ctrl+Z)");
+    readonly IconButton _redoButton = new(Glyph.Redo, "Redo (Ctrl+Y)");
+    readonly Label _toolHint = NewLabel("", UiFonts.Caption, Palette.Muted);
+
+    static string ToolHint(EditTool tool) => tool switch
     {
-        "Click shapes to keep only those. Right-click removes. Click a marker to undo it. Scroll to zoom.",
-        "Click a shape or a hole to remove it. Click a marker to undo it. Scroll to zoom.",
-        "Drag a circle over detail it missed (eyes, glasses): it looks much closer there. Ctrl+scroll sizes the circle."
+        EditTool.Select => "Click a line to select it (Shift adds), or drag a box. Delete removes it for good. Double-click to edit its points.",
+        EditTool.Points => "Click a line to edit its points. Drag points and handles; click the line to add a point. Alt-click: corner ↔ curve.",
+        EditTool.Pen => "Click for corners, drag for curves. Click the first point to close; Enter or right-click finishes; Esc cancels.",
+        EditTool.Find => "Mark where lines are missing: the AI looks again there, zoomed in. Scroll over an area for more or fewer lines.",
+        EditTool.Erase => "Mark where there should be no lines. Right-click an area to remove it. [ ] or Ctrl+scroll sizes it.",
+        _ => "Drag to move around. Scroll to zoom; double-click to fit. Hold Space with any tool to pan."
     };
 
     public MainForm(string exePath, string[] startupFiles)
@@ -191,62 +202,105 @@ sealed partial class MainForm : Form
         var card = new CardPanel { Dock = DockStyle.Fill, Padding = new Padding(4) };
         _preview.Dock = DockStyle.Fill;
         _preview.Mode = (PreviewMode)_viewMode.SelectedIndex;
-        _preview.PickRequested += Preview_PickRequested;
-        _preview.PickRemoveRequested += Preview_PickRemoveRequested;
+        _preview.EditCommitted += Preview_EditCommitted;
+        _preview.SelectionChanged += UpdateEditorBar;
+        _preview.ToolChanged += tool => { _palette.Selected = tool; UpdateEditorBar(); };
         _preview.AllowDrop = true;
         _preview.DragEnter += Window_DragEnter;
         _preview.DragDrop += Window_DragDrop;
+        _palette.Dock = DockStyle.Left;
+        _palette.ToolSelected += tool => { _preview.Tool = tool; _preview.Focus(); UpdateEditorBar(); };
         card.Controls.Add(_preview);
+        card.Controls.Add(_palette);
+
+        BuildOptionsBar();
 
         _statsLabel.AutoSize = false;
         _statsLabel.Dock = DockStyle.Fill;
         _statsLabel.TextAlign = ContentAlignment.MiddleLeft;
         _statsLabel.AutoEllipsis = true;
-        _clearPicksLink.Text = "Clear picks";
-        _clearPicksLink.LinkArea = new LinkArea(0, _clearPicksLink.Text.Length);
-        _clearPicksLink.Font = UiFonts.Small;
-        _clearPicksLink.AutoSize = false;
-        _clearPicksLink.Width = 90;
-        _clearPicksLink.Dock = DockStyle.Right;
-        _clearPicksLink.TextAlign = ContentAlignment.MiddleRight;
-        _clearPicksLink.LinkColor = Palette.Accent;
-        _clearPicksLink.ActiveLinkColor = Palette.AccentPressed;
-        _clearPicksLink.LinkBehavior = LinkBehavior.HoverUnderline;
-        _clearPicksLink.Visible = false;
-        _clearPicksLink.LinkClicked += (_, _) => ClearPicks();
         var infoRow = new Panel { Dock = DockStyle.Bottom, Height = 38 };
         infoRow.Controls.Add(_statsLabel);
-        infoRow.Controls.Add(_clearPicksLink);
 
-        var toolLabel = NewLabel("Click to", UiFonts.Small, Palette.Muted);
-        toolLabel.AutoSize = false;
-        toolLabel.Dock = DockStyle.Left;
-        toolLabel.Width = 64;
-        toolLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _pickTool.Dock = DockStyle.Left;
-        _pickTool.Width = 330;
-        _pickTool.SelectedIndexChanged += (_, _) =>
-        {
-            _preview.Tool = (PickKind)_pickTool.SelectedIndex;
-            _pickHint.Text = ToolHints[_pickTool.SelectedIndex];
-        };
-        _pickHint.Text = ToolHints[0];
-        _pickHint.AutoSize = false;
-        _pickHint.Dock = DockStyle.Fill;
-        _pickHint.TextAlign = ContentAlignment.MiddleLeft;
-        _pickHint.Padding = new Padding(10, 0, 0, 0);
-        _pickHint.AutoEllipsis = true;
-        _toolRow.Controls.Add(_pickHint);
-        _toolRow.Controls.Add(_pickTool);
-        _toolRow.Controls.Add(toolLabel);
-
-        var spacer = new Panel { Dock = DockStyle.Top, Height = 8 };
+        var spacer = new Panel { Dock = DockStyle.Top, Height = 6 };
         pane.Controls.Add(card);
+        pane.Controls.Add(_optionsBar);
         pane.Controls.Add(spacer);
         pane.Controls.Add(topRow);
         pane.Controls.Add(infoRow);
-        pane.Controls.Add(_toolRow);
         return pane;
+    }
+
+    /// <summary>The bar above the canvas: what the current tool does, its options, and undo / redo.</summary>
+    void BuildOptionsBar()
+    {
+        _areaShape.Dock = DockStyle.Left;
+        _areaShape.Width = 270;
+        _areaShape.SelectedIndexChanged += (_, _) => { _preview.AreaShape = (Tracedrop.Core.Editing.RegionShape)_areaShape.SelectedIndex; _preview.Focus(); };
+
+        var selectActions = new FlowLayoutPanel { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, Padding = new Padding(0, 3, 0, 0), Name = "selectActions" };
+        foreach (var b in new[] { _editPointsButton, _deleteButton, _keepOnlyButton })
+        {
+            b.Height = 36;
+            b.Margin = new Padding(0, 0, 6, 0);
+            selectActions.Controls.Add(b);
+        }
+        _editPointsButton.Click += (_, _) => { _preview.EditSelection(); _preview.Focus(); };
+        _deleteButton.Click += (_, _) => { _preview.DeleteSelection(); _preview.Focus(); };
+        _keepOnlyButton.Click += (_, _) => { _preview.KeepOnlySelection(); _preview.Focus(); };
+
+        _toolHint.AutoSize = false;
+        _toolHint.Dock = DockStyle.Fill;
+        _toolHint.TextAlign = ContentAlignment.MiddleLeft;
+        _toolHint.Padding = new Padding(10, 0, 6, 0);
+        _toolHint.AutoEllipsis = true;
+
+        _clearEditsLink.Text = "Clear edits";
+        _clearEditsLink.LinkArea = new LinkArea(0, _clearEditsLink.Text.Length);
+        _clearEditsLink.Font = UiFonts.Small;
+        _clearEditsLink.AutoSize = false;
+        _clearEditsLink.Width = 84;
+        _clearEditsLink.Dock = DockStyle.Right;
+        _clearEditsLink.TextAlign = ContentAlignment.MiddleRight;
+        _clearEditsLink.LinkColor = Palette.Accent;
+        _clearEditsLink.ActiveLinkColor = Palette.AccentPressed;
+        _clearEditsLink.LinkBehavior = LinkBehavior.HoverUnderline;
+        _clearEditsLink.LinkClicked += (_, _) => ClearEdits();
+
+        _undoButton.Dock = DockStyle.Right;
+        _redoButton.Dock = DockStyle.Right;
+        _undoButton.Click += (_, _) => UndoEdit();
+        _redoButton.Click += (_, _) => RedoEdit();
+
+        _optionsBar.Controls.Add(_toolHint);
+        _optionsBar.Controls.Add(selectActions);
+        _optionsBar.Controls.Add(_areaShape);
+        // Docked right: the last added sits furthest right, so this reads Undo, Redo, Clear edits.
+        _optionsBar.Controls.Add(_undoButton);
+        _optionsBar.Controls.Add(_redoButton);
+        _optionsBar.Controls.Add(_clearEditsLink);
+        UpdateEditorBar();
+    }
+
+    /// <summary>Shows the options of the current tool and enables what the selection allows.</summary>
+    void UpdateEditorBar()
+    {
+        var tool = _preview.Tool;
+        _palette.Selected = tool;
+        _toolHint.Text = ToolHint(tool);
+        _areaShape.Visible = tool is EditTool.Find or EditTool.Erase;
+        var selectActions = _optionsBar.Controls["selectActions"];
+        if (selectActions is not null) selectActions.Visible = tool == EditTool.Select;
+        _editPointsButton.Enabled = _preview.CanEditSelection;
+        _deleteButton.Enabled = _preview.HasSelection;
+        _keepOnlyButton.Enabled = _preview.CanEditSelection;
+        var item = _shown;
+        _undoButton.Enabled = item?.History.CanUndo == true;
+        _redoButton.Enabled = item?.History.CanRedo == true;
+        bool hasEdits;
+        if (item is null) hasEdits = false;
+        else lock (item.Gate) hasEdits = item.Settings.HasEdits;
+        _clearEditsLink.Visible = hasEdits;
     }
 
     #endregion

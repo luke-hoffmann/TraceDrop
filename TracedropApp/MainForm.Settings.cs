@@ -225,8 +225,7 @@ sealed partial class MainForm
         _loading = true;
         try
         {
-            _template = s.Clone();
-            _template.Picks = new();
+            _template = s.WithoutEdits();
             _mode.SelectedIndex = (int)s.Mode;
             _detail.Value = s.Detail;
             _threshold.Value = s.Threshold;
@@ -304,8 +303,7 @@ sealed partial class MainForm
         s.Offset = (double)_offset.Box.Value;
         s.Units = (OutputUnits)_units.SelectedIndex;
         s.WorkingSize = Resolutions[Math.Max(0, _resolution.Box.SelectedIndex)];
-        s.Picks = new();
-        return s.Normalized();
+        return s.WithoutEdits().Normalized();
     }
 
     void OnUiChanged()
@@ -335,16 +333,16 @@ sealed partial class MainForm
         SaveConfigSoon();
     }
 
-    /// <summary>Gives the selected pictures these settings, each keeping its own picks.</summary>
+    /// <summary>Gives the selected pictures these settings, each keeping its own edits.</summary>
     void ApplyToSelected(TraceSettings s)
     {
         foreach (var item in SelectedItems())
         {
             lock (item.Gate)
             {
-                var picks = item.Settings.Picks;
+                var edits = EditState.From(item.Settings);
                 item.Settings = s.Clone();
-                item.Settings.Picks = picks;
+                edits.ApplyTo(item.Settings);
                 item.PresetName = _activePreset;
                 item.Version++;
             }
@@ -359,9 +357,9 @@ sealed partial class MainForm
         {
             lock (item.Gate)
             {
-                var picks = item.Settings.Picks;
+                var edits = EditState.From(item.Settings);
                 item.Settings = s.Clone();
-                item.Settings.Picks = picks;
+                edits.ApplyTo(item.Settings);
                 item.PresetName = _activePreset;
                 item.Version++;
             }
@@ -403,8 +401,7 @@ sealed partial class MainForm
 
     void CaptureConfigFromUi()
     {
-        _config.LastSettings = _template.Clone();
-        _config.LastSettings.Picks = new();
+        _config.LastSettings = _template.WithoutEdits();
         _config.LastPreset = _presetEdited ? null : _activePreset;
     }
 

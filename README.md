@@ -15,19 +15,29 @@ no install, nothing uploaded, and your settings and presets travel inside the ex
 2. Drop pictures on the window, click **Add pictures**, paste with **Ctrl+V**, or drop pictures on the exe icon.
    Several at once is fine: each one is traced in the background.
 3. Pick a **preset**, then fine-tune. The preview updates as you drag a slider.
-4. Drag the green **Drag DXF** chip (or a row in the list) to wherever you want the file. **Save…** copies the
+4. Drag the blue **Drag DXF** chip (or a row in the list) to wherever you want the file. **Save…** copies the
    files to a folder instead.
 
-Under the preview, **Click to** picks what a click on the picture does:
+### Fix it by hand, right there
 
-- **Keep only**: click shapes to keep just those.
-- **Remove**: click a shape to drop it, or a hole to fill it. Right-click does this in any tool.
-- **Focus area**: drag a circle over detail Tracedrop missed, like eyes, glasses or a faint edge. Inside the circle it
-  looks much closer: it crops that area, enlarges it, evens out its contrast, runs the AI model on it again, and
-  relaxes the threshold and the minimum feature size there. Click without dragging for a circle of the last size;
-  Ctrl+scroll changes the size.
+The AI does its best; where it misses, you finish the drawing in Tracedrop instead of redrawing it in CAD. The
+canvas works like a vector editor (tools on the left, their options above the picture), and the AI keeps
+tracing live around what you change:
 
-Click a marker to take it away again. Scroll to zoom, drag to pan, double-click to fit.
+| Tool | Key | What it does |
+| --- | --- | --- |
+| Select | V | Click a line to select it (Shift adds), or drag a box. **Delete** removes it for good, even when you change the settings and it re-traces. **Keep only** keeps the selection and drops the rest. Drag your own lines to move them. |
+| Edit points | A | Click any line to edit its points. An AI line becomes yours (blue) the moment you do. Drag points and Bezier handles, click the line to add a point, Alt-click a point to switch corner ↔ curve, Delete removes a point. |
+| Pen | P | Draw your own line: click for corners, drag for curves, Shift for 45°. Click the first point to close it; Enter or right-click finishes, Esc cancels. |
+| Find lines here | F | Lines missing (eyes, glasses, a faint edge)? Mark the spot with a circle, rectangle or brush. The AI looks again there: it crops and enlarges that area, spreads its tones and traces it at a closer scale, and its lines replace what was inside. Scroll over the area for more (+) or fewer (−) lines. |
+| Erase lines here | E | Mark where there should be no lines (background clutter, texture). In Outline and Shapes modes it cuts the shapes. |
+| Hand | H | Pan. Space with any tool does the same; scroll zooms, Ctrl+0 or double-click fits. |
+
+Later marks win where they overlap, as in a paint program: erase a messy patch, then mark Find inside it to get
+just the line you want. Right-click a Find or Erase area to remove it; **Ctrl+Z** / **Ctrl+Y** undo and redo
+every edit, per picture; **Clear edits** starts over. Your own lines are exported exactly as drawn (lines stay
+lines, curves become splines) on the same layers as the traced ones. Every picture keeps its own edits when you
+change settings or apply them to all.
 
 Traced files live in a temporary folder until you drag or save them. Closing Tracedrop deletes that folder
 (a hidden helper does it even if the app is killed) and stores your settings inside `Tracedrop.exe`.
@@ -112,10 +122,13 @@ picture ──► load (any format, EXIF rotation, transparency) ──► scale
                      Shapes  = Otsu / manual threshold, or k-means colour layers
                      Edges   = TEED edge network (AI) or Canny, two-level threshold
                      Line art = Informative Drawings (AI), else TEED + XDoG
-        ──► clean:   close gaps · drop specks and pinholes · fill holes · picks · largest · offset
-        ──► trace:   sub-pixel contours (marching squares) or centerlines (thinning + graph walk, spur pruning)
+        ──► clean:   close gaps · drop specks and pinholes · fill holes · your Find/Erase marks (shapes)
+                     · picks · largest · offset
+        ──► trace:   sub-pixel contours (marching squares) or centerlines (thinning + graph walk, spur pruning,
+                     corner and crossing knots merged) · your Find/Erase marks (lines) · deleted lines
         ──► fit:     corner detection → smoothing between corners → lines & arcs / Bezier splines /
                      polylines within a tolerance; round loops → circles
+        ──► yours:   your own paths added exactly as drawn
         ──► export:  DXF · SVG · PDF
 ```
 

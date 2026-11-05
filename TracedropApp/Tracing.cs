@@ -33,6 +33,8 @@ sealed class TraceItem : IDisposable
     public TraceSettings Settings;
     public string? PresetName;
     public int Version;
+    /// <summary>Undo / redo of this picture's edits (UI thread).</summary>
+    public readonly EditHistory History = new();
 
     // Worker-owned.
     public TraceJob? Job;
