@@ -5,7 +5,8 @@ namespace TracedropApp;
 /// <summary>
 /// Runs as a hidden copy of this same exe, invoked with (--cleanup-watcher, ownerPid, sessionPath, exePath).
 /// Waits for the window's process to exit (normal close, force-kill or crash), then
-///  1. stores the settings the app left in the session folder inside Tracedrop.exe (portable settings), and
+///  1. hands the settings the app left in the session folder to a hidden helper that writes them into the end
+///     of Tracedrop.exe once this process has exited too (see PortableStore), and
 ///  2. deletes the temporary session folder, so traced files never outlive the app.
 /// If another program still has a file open, deletion is retried with a growing delay for about two minutes.
 /// </summary>
@@ -37,7 +38,7 @@ static class CleanupWatcher
             if (File.Exists(pending) && File.Exists(exePath))
             {
                 var config = AppConfig.FromJson(File.ReadAllText(pending));
-                PortableStore.Bake(exePath, config);
+                if (PortableStore.SavePending(exePath, config)) StartBake(exePath);
             }
         }
         catch
@@ -61,6 +62,32 @@ static class CleanupWatcher
             if (Environment.TickCount64 >= deadline) return;
             Thread.Sleep(delay);
             delay = Math.Min(delay * 2, MaxDelayMs);
+        }
+    }
+
+    /// <summary>
+    /// Starts the hidden in-place bake. It waits for this process to exit (this process runs from the exe, which
+    /// can't be written until it's gone). If PowerShell can't start, the pending settings are used next launch.
+    /// </summary>
+    static void StartBake(string exePath)
+    {
+        try
+        {
+            var script = PortableStore.BakeScript(exePath, PortableStore.PendingPath(exePath), Environment.ProcessId);
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
+            };
+            foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script })
+                startInfo.ArgumentList.Add(arg);
+            using var _ = System.Diagnostics.Process.Start(startInfo);
+        }
+        catch
+        {
+            // No PowerShell: the pending file stays and is used (and baked) next time.
         }
     }
 

@@ -256,8 +256,6 @@ sealed partial class MainForm : Form
     void MainForm_Shown(object? sender, EventArgs e)
     {
         StartCleanupWatcher();
-        if (!_configFromExe && File.Exists(PortableStore.FallbackPath))
-            ShowStatus("Settings loaded from this PC (Tracedrop.exe couldn't be updated last time).", Palette.Muted);
         if (_startupFiles.Length > 0) AddPictures(_startupFiles);
         UpdateDeviceLabel();
     }
