@@ -25,7 +25,7 @@ public static class Presets
             new TraceSettings
             {
                 Mode = TraceMode.Shapes, AutoThreshold = true, Colors = 2, Detail = 75, Smoothness = 35,
-                CornerSharpness = 80, Curves = CurveStyle.LinesAndArcs, SnapCircles = true, WorkingSize = 2000
+                CornerSharpness = 80, Curves = CurveStyle.LinesAndArcs, SnapCircles = true, WorkingSize = 2400
             }, true),
 
         new Preset("Sketch / drawing", "Pen and pencil lines as single centerlines.",

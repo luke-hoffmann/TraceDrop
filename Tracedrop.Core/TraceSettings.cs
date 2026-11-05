@@ -143,7 +143,7 @@ public sealed class TraceSettings
     /// <summary>Longest side, in pixels, the picture is traced at. Higher = more precise and slower.</summary>
     public int WorkingSize { get; set; } = 1600;
 
-    /// <summary>Clicked points (0..1 image coordinates): positive keeps the shape under it, negative drops it.</summary>
+    /// <summary>Clicks on the picture (0..1 image coordinates): keep only, remove, or add an area.</summary>
     public List<PickPoint> Picks { get; set; } = new();
 
     public TraceSettings Clone()
@@ -178,6 +178,7 @@ public sealed class TraceSettings
         OutputSize = Math.Clamp(OutputSize <= 0 ? 100 : OutputSize, 0.01, 100000);
         WorkingSize = Math.Clamp(WorkingSize, 256, 6000);
         Picks ??= new();
+        Picks.RemoveAll(p => p is null || !Enum.IsDefined(p.Kind) || double.IsNaN(p.X) || double.IsNaN(p.Y));
         if (!Enum.IsDefined(Mode)) Mode = TraceMode.Silhouette;
         if (!Enum.IsDefined(Curves)) Curves = CurveStyle.LinesAndArcs;
         if (!Enum.IsDefined(Strokes)) Strokes = StrokeStyle.Centerline;
@@ -188,8 +189,25 @@ public sealed class TraceSettings
 
 }
 
-/// <summary>A click on the preview: X/Y in 0..1 of the image, Keep=false means "drop the shape here".</summary>
-public sealed record PickPoint(double X, double Y, bool Keep);
+/// <summary>What a click on the preview does.</summary>
+public enum PickKind
+{
+    /// <summary>Keep only the shapes that have a Keep click (everything else is dropped).</summary>
+    Keep,
+    /// <summary>Remove the shape under the click, or fill the hole under it.</summary>
+    Remove,
+    /// <summary>"This is a region too": look harder in a circle around the click and add what's there.</summary>
+    Add
+}
+
+/// <summary>
+/// A click on the preview. X/Y are 0..1 of the picture; Radius (Add only) is a fraction of the picture's longest side.
+/// </summary>
+public sealed record PickPoint(double X, double Y, PickKind Kind, double Radius = 0)
+{
+    /// <summary>Default size of an Add circle: 6% of the picture's longest side.</summary>
+    public const double DefaultAddRadius = 0.06;
+}
 
 internal static class Json
 {

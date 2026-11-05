@@ -66,7 +66,7 @@ public static class Cleanup
                 Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
             }
 
-            RemoveSmallComponents(mask, minArea);           // specks
+            RemoveSmallComponents(mask, minArea, relaxed: FocusCircles(mask.Cols, mask.Rows, s.Picks)); // specks
             using (var inverted = new Mat())                 // pin-holes: same rule applied to the background
             {
                 Cv2.BitwiseNot(mask, inverted);
@@ -93,14 +93,31 @@ public static class Cleanup
             Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
         }
         // Strokes are thin, so their "area" threshold is smaller than for filled regions.
-        RemoveSmallComponents(mask, MinFeatureArea(s.Detail, mask.Cols, mask.Rows) * 0.35);
+        RemoveSmallComponents(mask, MinFeatureArea(s.Detail, mask.Cols, mask.Rows) * 0.35,
+            relaxed: FocusCircles(mask.Cols, mask.Rows, s.Picks));
         ApplyPicks(mask, s.Picks, radius: (int)Math.Round(12 * scale));
         if (s.Keep == KeepShapes.Largest) KeepLargest(mask);
         return Detection.FromStrokes(mask);
     }
 
+    /// <summary>
+    /// Focus circles (centre and radius in pixels) of a picture this size: inside them small detail is wanted,
+    /// so size rules are relaxed there.
+    /// </summary>
+    public static List<(Point2d Center, double Radius)> FocusCircles(int width, int height, IEnumerable<PickPoint> picks)
+    {
+        var longest = Math.Max(width, height);
+        return picks.Where(p => p.Kind == PickKind.Add)
+            .Select(p => (new Point2d(p.X * (width - 1), p.Y * (height - 1)), Math.Max(4, (p.Radius > 0 ? p.Radius : PickPoint.DefaultAddRadius) * longest)))
+            .ToList();
+    }
+
+    /// <summary>How much smaller features may be inside focus circles.</summary>
+    public const double FocusRelax = 0.2;
+
     /// <summary>Drops 8-connected components smaller than <paramref name="minArea"/>.</summary>
-    internal static void RemoveSmallComponents(Mat mask, double minArea, bool keepBorderTouching = false)
+    internal static void RemoveSmallComponents(Mat mask, double minArea, bool keepBorderTouching = false,
+        IReadOnlyList<(Point2d Center, double Radius)>? relaxed = null)
     {
         using var labels = new Mat();
         using var stats = new Mat();
@@ -113,6 +130,12 @@ public static class Cleanup
         {
             var area = stats.At<int>(i, (int)ConnectedComponentsTypes.Area);
             if (area >= minArea) continue;
+            if (relaxed is { Count: > 0 } && area >= minArea * FocusRelax)
+            {
+                var cx = centroids.At<double>(i, 0);
+                var cy = centroids.At<double>(i, 1);
+                if (relaxed.Any(f => Math.Pow(cx - f.Center.X, 2) + Math.Pow(cy - f.Center.Y, 2) <= f.Radius * f.Radius)) continue;
+            }
             if (keepBorderTouching)
             {
                 var x = stats.At<int>(i, (int)ConnectedComponentsTypes.Left);
@@ -168,12 +191,16 @@ public static class Cleanup
     /// Clicked points: components under a "drop" click are removed; if there is any "keep" click, only the
     /// components under keep clicks survive. A click within <paramref name="radius"/> px of a component counts.
     /// </summary>
-    internal static void ApplyPicks(Mat mask, IReadOnlyList<PickPoint> picks, int radius = 0)
+    internal static void ApplyPicks(Mat mask, IReadOnlyList<PickPoint> allPicks, int radius = 0)
     {
-        if (picks.Count == 0) return;
+        var picks = allPicks.Where(p => p.Kind != PickKind.Add).ToList();
         using var labels = new Mat();
         var count = Cv2.ConnectedComponents(mask, labels, PixelConnectivity.Connectivity8, MatType.CV_32S);
-        if (count <= 1) return;
+        if (count <= 1)
+        {
+            if (radius == 0) FillPickedHoles(mask, picks.Where(p => p.Kind == PickKind.Remove).ToList());
+            return;
+        }
 
         int LabelNear(PickPoint p)
         {
@@ -195,15 +222,15 @@ public static class Cleanup
             return best;
         }
 
-        var keepIds = picks.Where(p => p.Keep).Select(LabelNear).Where(id => id > 0).ToHashSet();
-        var dropIds = picks.Where(p => !p.Keep).Select(LabelNear).Where(id => id > 0).ToHashSet();
-        var anyKeep = picks.Any(p => p.Keep);
+        var keepIds = picks.Where(p => p.Kind == PickKind.Keep).Select(LabelNear).Where(id => id > 0).ToHashSet();
+        var dropIds = picks.Where(p => p.Kind == PickKind.Remove).Select(LabelNear).Where(id => id > 0).ToHashSet();
+        var anyKeep = picks.Any(p => p.Kind == PickKind.Keep);
         var drop = new bool[count];
         for (var i = 1; i < count; i++) drop[i] = dropIds.Contains(i) || (anyKeep && !keepIds.Contains(i));
         ClearLabels(mask, labels, drop);
 
         // A "drop" click inside a hole (background enclosed by a shape) fills that hole.
-        if (radius == 0) FillPickedHoles(mask, picks.Where(p => !p.Keep).ToList());
+        if (radius == 0) FillPickedHoles(mask, picks.Where(p => p.Kind == PickKind.Remove).ToList());
     }
 
     static void FillPickedHoles(Mat mask, List<PickPoint> drops)

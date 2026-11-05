@@ -97,12 +97,12 @@ public class PortableTests : IDisposable
     [Fact]
     public void Settings_json_round_trips_and_clamps_bad_values()
     {
-        var s = new TraceSettings { Mode = TraceMode.Shapes, Colors = 5, Detail = 12.5, Picks = { new PickPoint(0.25, 0.5, false) } };
+        var s = new TraceSettings { Mode = TraceMode.Shapes, Colors = 5, Detail = 12.5, Picks = { new PickPoint(0.25, 0.5, PickKind.Remove), new PickPoint(0.5, 0.5, PickKind.Add, 0.1) } };
         var back = TraceSettings.FromJson(s.ToJson());
         Assert.Equal(TraceMode.Shapes, back.Mode);
         Assert.Equal(5, back.Colors);
         Assert.Equal(12.5, back.Detail);
-        Assert.Equal(new PickPoint(0.25, 0.5, false), Assert.Single(back.Picks));
+        Assert.Equal(new[] { new PickPoint(0.25, 0.5, PickKind.Remove), new PickPoint(0.5, 0.5, PickKind.Add, 0.1) }, back.Picks);
 
         var wild = TraceSettings.FromJson("{\"Detail\": 900, \"Colors\": 99, \"WorkingSize\": 5, \"Mode\": \"Edges\", \"Unknown\": 1}");
         Assert.Equal(100, wild.Detail);

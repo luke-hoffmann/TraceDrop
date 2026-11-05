@@ -18,8 +18,16 @@ no install, nothing uploaded, and your settings and presets travel inside the ex
 4. Drag the green **Drag DXF** chip (or a row in the list) to wherever you want the file. **Save…** copies the
    files to a folder instead.
 
-Click a shape in the preview to keep only that shape; right-click a shape or a hole to remove it. Scroll to
-zoom, drag to pan, double-click to fit.
+Under the preview, **Click to** picks what a click on the picture does:
+
+- **Keep only**: click shapes to keep just those.
+- **Remove**: click a shape to drop it, or a hole to fill it. Right-click does this in any tool.
+- **Focus area**: drag a circle over detail Tracedrop missed, like eyes, glasses or a faint edge. Inside the circle it
+  looks much closer: it crops that area, enlarges it, evens out its contrast, runs the AI model on it again, and
+  relaxes the threshold and the minimum feature size there. Click without dragging for a circle of the last size;
+  Ctrl+scroll changes the size.
+
+Click a marker to take it away again. Scroll to zoom, drag to pan, double-click to fit.
 
 Traced files live in a temporary folder until you drag or save them. Closing Tracedrop deletes that folder
 (a hidden helper does it even if the app is killed) and stores your settings inside `Tracedrop.exe`.

@@ -14,6 +14,7 @@ using Tracedrop.Core.Vector;
 var inputs = new List<string>();
 var presetName = Presets.Default.Name;
 var overrides = new List<(string Key, string Value)>();
+var picks = new List<PickPoint>();
 var outDir = Directory.GetCurrentDirectory();
 var formats = new List<ExportFormat> { ExportFormat.Dxf, ExportFormat.Svg };
 var render = false;
@@ -32,6 +33,15 @@ for (var i = 0; i < args.Length; i++)
             break;
         }
         case "--out": outDir = args[++i]; break;
+        case "--pick":
+        {
+            // --pick keep|remove|focus,X,Y[,R]  (X, Y in 0..1 of the picture; R a fraction of its longest side)
+            var parts = args[++i].Split(',');
+            var kind = parts[0].ToLowerInvariant() switch { "keep" => PickKind.Keep, "remove" => PickKind.Remove, _ => PickKind.Add };
+            double D(int k) => double.Parse(parts[k], CultureInfo.InvariantCulture);
+            picks.Add(new PickPoint(D(1), D(2), kind, parts.Length > 3 ? D(3) : 0));
+            break;
+        }
         case "--formats":
             formats = args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries)
                 .Select(f => Enum.Parse<ExportFormat>(f.Trim(), ignoreCase: true)).ToList();
@@ -60,7 +70,7 @@ for (var i = 0; i < args.Length; i++)
             return 0;
         case "-h":
         case "--help":
-            Console.WriteLine("tracedrop-cli <image>... [--preset NAME] [--set Key=Value]... [--out DIR] [--formats dxf,svg,pdf] [--render] [--models DIR] [--cpu] [--list-presets]");
+            Console.WriteLine("tracedrop-cli <image>... [--preset NAME] [--set Key=Value]... [--pick keep|remove|focus,X,Y[,R]]... [--out DIR] [--formats dxf,svg,pdf] [--render] [--models DIR] [--cpu] [--list-presets]");
             return 0;
         default: inputs.Add(args[i]); break;
     }
@@ -80,6 +90,7 @@ if (preset is null)
 }
 
 var settings = ApplyOverrides(preset.Settings.Clone(), overrides);
+settings.Picks.AddRange(picks);
 Directory.CreateDirectory(outDir);
 using var models = modelDir is null ? new ModelStore() : new ModelStore(modelDir);
 models.PreferGpu = !cpu;

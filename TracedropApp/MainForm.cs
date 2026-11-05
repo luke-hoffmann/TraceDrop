@@ -39,7 +39,16 @@ sealed partial class MainForm : Form
     readonly DragChip _dragChip = new();
     readonly Label _statsLabel = NewLabel("", UiFonts.Small, Palette.Muted);
     readonly LinkLabel _clearPicksLink = new();
-    readonly Label _pickHint = NewLabel("Click a shape to keep only it  ·  right-click a shape or hole to remove it  ·  scroll to zoom", UiFonts.Caption, Palette.Muted);
+    readonly Panel _toolRow = new() { Dock = DockStyle.Bottom, Height = 40 };
+    readonly Segmented _pickTool = new(null, "Keep only", "Remove", "Focus area");
+    readonly Label _pickHint = NewLabel("", UiFonts.Caption, Palette.Muted);
+
+    static readonly string[] ToolHints =
+    {
+        "Click shapes to keep only those. Right-click removes. Click a marker to undo it. Scroll to zoom.",
+        "Click a shape or a hole to remove it. Click a marker to undo it. Scroll to zoom.",
+        "Drag a circle over detail it missed (eyes, glasses): it looks much closer there. Ctrl+scroll sizes the circle."
+    };
 
     public MainForm(string exePath, string[] startupFiles)
     {
@@ -183,6 +192,7 @@ sealed partial class MainForm : Form
         _preview.Dock = DockStyle.Fill;
         _preview.Mode = (PreviewMode)_viewMode.SelectedIndex;
         _preview.PickRequested += Preview_PickRequested;
+        _preview.PickRemoveRequested += Preview_PickRemoveRequested;
         _preview.AllowDrop = true;
         _preview.DragEnter += Window_DragEnter;
         _preview.DragDrop += Window_DragDrop;
@@ -208,17 +218,34 @@ sealed partial class MainForm : Form
         infoRow.Controls.Add(_statsLabel);
         infoRow.Controls.Add(_clearPicksLink);
 
+        var toolLabel = NewLabel("Click to", UiFonts.Small, Palette.Muted);
+        toolLabel.AutoSize = false;
+        toolLabel.Dock = DockStyle.Left;
+        toolLabel.Width = 64;
+        toolLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _pickTool.Dock = DockStyle.Left;
+        _pickTool.Width = 330;
+        _pickTool.SelectedIndexChanged += (_, _) =>
+        {
+            _preview.Tool = (PickKind)_pickTool.SelectedIndex;
+            _pickHint.Text = ToolHints[_pickTool.SelectedIndex];
+        };
+        _pickHint.Text = ToolHints[0];
         _pickHint.AutoSize = false;
-        _pickHint.Dock = DockStyle.Bottom;
-        _pickHint.Height = 20;
+        _pickHint.Dock = DockStyle.Fill;
         _pickHint.TextAlign = ContentAlignment.MiddleLeft;
+        _pickHint.Padding = new Padding(10, 0, 0, 0);
+        _pickHint.AutoEllipsis = true;
+        _toolRow.Controls.Add(_pickHint);
+        _toolRow.Controls.Add(_pickTool);
+        _toolRow.Controls.Add(toolLabel);
 
         var spacer = new Panel { Dock = DockStyle.Top, Height = 8 };
         pane.Controls.Add(card);
         pane.Controls.Add(spacer);
         pane.Controls.Add(topRow);
         pane.Controls.Add(infoRow);
-        pane.Controls.Add(_pickHint);
+        pane.Controls.Add(_toolRow);
         return pane;
     }
 

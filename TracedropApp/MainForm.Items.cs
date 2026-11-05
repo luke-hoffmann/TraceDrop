@@ -354,6 +354,20 @@ sealed partial class MainForm
         ShowItem(item);
     }
 
+    void Preview_PickRemoveRequested(int index)
+    {
+        var item = PrimaryItem();
+        if (item is null) return;
+        lock (item.Gate)
+        {
+            if (index < 0 || index >= item.Settings.Picks.Count) return;
+            item.Settings.Picks.RemoveAt(index);
+            item.Version++;
+        }
+        _worker.Signal(item);
+        ShowItem(item);
+    }
+
     void ClearPicks()
     {
         var item = PrimaryItem();
@@ -371,7 +385,7 @@ sealed partial class MainForm
     void UpdateEmptyState()
     {
         _listHint.Visible = _items.Count > 0;
-        _pickHint.Visible = _items.Count > 0;
+        _toolRow.Visible = _items.Count > 0;
         if (_items.Count == 0) ShowItem(null);
         Text = _items.Count > 0 ? $"Tracedrop ({_items.Count})" : "Tracedrop";
         UpdateActionStates();

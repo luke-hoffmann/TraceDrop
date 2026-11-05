@@ -14,19 +14,112 @@ public sealed class Signals
     public Mat? EdgeAverage { get; init; }
     /// <summary>Ink 0..1 from the line-drawing network, or null to use the built-in XDoG drawing.</summary>
     public Mat? LineInk { get; init; }
+    /// <summary>Close-up line strength for each Focus area (stroke modes).</summary>
+    public IReadOnlyList<FocusMap> Focus { get; init; } = Array.Empty<FocusMap>();
 }
 
 /// <summary>Turns the prepared picture (and model outputs) into raw regions or strokes. No clean-up happens here.</summary>
 public static class Detector
 {
-    public static Detection Detect(Signals signals, TraceSettings s) => s.Mode switch
+    public static Detection Detect(Signals signals, TraceSettings s)
     {
-        TraceMode.Silhouette => Silhouette(signals, s),
-        TraceMode.Shapes => s.Colors <= 2 ? TwoTone(signals.Prepared, s) : ColorLayers(signals.Prepared, s),
-        TraceMode.Edges => Edges(signals, s),
-        TraceMode.LineArt => LineArt(signals, s),
-        _ => throw new ArgumentOutOfRangeException(nameof(s))
-    };
+        using var addMask = AddMask(signals.Prepared.Size(), s.Picks);
+        var detection = s.Mode switch
+        {
+            TraceMode.Silhouette => Silhouette(signals, s),
+            TraceMode.Shapes => s.Colors <= 2 ? TwoTone(signals.Prepared, s) : ColorLayers(signals.Prepared, s),
+            TraceMode.Edges => Edges(signals, s, addMask),
+            TraceMode.LineArt => LineArt(signals, s, addMask),
+            _ => throw new ArgumentOutOfRangeException(nameof(s))
+        };
+        if (!detection.IsStrokes && addMask is not null) AddAreas(detection.Regions, signals, s.Picks);
+        return detection;
+    }
+
+    // ---------------------------------------------------------------- "Add area" clicks
+
+    /// <summary>Soft circles for the Add clicks (1 inside, fading out at the rim, CV_32F), or null when there are none.</summary>
+    internal static Mat? AddMask(Size size, IEnumerable<PickPoint> picks)
+    {
+        var adds = picks.Where(p => p.Kind == PickKind.Add).ToList();
+        if (adds.Count == 0) return null;
+        var mask = new Mat(size, MatType.CV_32F, Scalar.All(0));
+        var longest = Math.Max(size.Width, size.Height);
+        var feather = 0.0;
+        foreach (var p in adds)
+        {
+            var r = AddRadiusPixels(p, longest);
+            Cv2.Circle(mask, Seed(p, size), (int)Math.Round(r), Scalar.All(1), -1, LineTypes.AntiAlias);
+            feather = Math.Max(feather, r * 0.12);
+        }
+        Cv2.GaussianBlur(mask, mask, new Size(0, 0), Math.Max(1.5, feather));
+        return mask;
+    }
+
+    static double AddRadiusPixels(PickPoint p, int longest) =>
+        Math.Max(4, (p.Radius > 0 ? p.Radius : PickPoint.DefaultAddRadius) * longest);
+
+    static Point Seed(PickPoint p, Size size) =>
+        new((int)Math.Clamp(Math.Round(p.X * (size.Width - 1)), 0, size.Width - 1), (int)Math.Clamp(Math.Round(p.Y * (size.Height - 1)), 0, size.Height - 1));
+
+    /// <summary>Looks harder inside the Add circles: strength is raised up to 3.3x so faint lines there pass the threshold.</summary>
+    static void BoostInside(Mat strength, Mat addMask)
+    {
+        using var denominator = new Mat();
+        addMask.ConvertTo(denominator, MatType.CV_32F, -0.7, 1.0);
+        Cv2.Divide(strength, denominator, strength);
+        Cv2.Threshold(strength, strength, 1, 1, ThresholdTypes.Trunc);
+    }
+
+    /// <summary>
+    /// Outline and Shapes modes: each Add click adds the similar-coloured area under it (kept inside its circle),
+    /// plus, in Outline mode, anything the subject model gave even a little confidence to inside the circle.
+    /// </summary>
+    static void AddAreas(List<RegionLayer> layers, Signals signals, IEnumerable<PickPoint> picks)
+    {
+        if (layers.Count == 0) return;
+        var prepared = signals.Prepared;
+        var size = prepared.Size();
+        var longest = Math.Max(size.Width, size.Height);
+        using var lab = new Mat();
+        Cv2.CvtColor(prepared, lab, ColorConversionCodes.BGR2Lab);
+        foreach (var p in picks.Where(p => p.Kind == PickKind.Add))
+        {
+            var seed = Seed(p, size);
+            var r = (int)Math.Round(AddRadiusPixels(p, longest));
+            using var circle = new Mat(size, MatType.CV_8U, Scalar.All(0));
+            Cv2.Circle(circle, seed, r, Scalar.All(255), -1);
+
+            // Flood fill blocked everywhere outside the circle (the fill mask is 2 px larger than the picture).
+            using var fill = new Mat(size.Height + 2, size.Width + 2, MatType.CV_8U, Scalar.All(1));
+            using (var inner = fill[new Rect(1, 1, size.Width, size.Height)])
+                inner.SetTo(Scalar.All(0), circle);
+            var flags = (FloodFillFlags)((int)FloodFillFlags.Link8 | (int)FloodFillFlags.FixedRange | (int)FloodFillFlags.MaskOnly | (255 << 8));
+            Cv2.FloodFill(lab, fill, seed, Scalar.All(0), out _, new Scalar(18, 10, 10), new Scalar(18, 10, 10), flags);
+            using var region = new Mat();
+            using (var inner = fill[new Rect(1, 1, size.Width, size.Height)])
+                Cv2.Compare(inner, Scalar.All(255), region, CmpTypes.EQ);
+
+            if (signals.Subject is not null)
+            {
+                using var likely = new Mat();
+                Cv2.Threshold(signals.Subject, likely, 0.2, 255, ThresholdTypes.Binary);
+                using var likely8 = new Mat();
+                likely.ConvertTo(likely8, MatType.CV_8U);
+                Cv2.BitwiseAnd(likely8, circle, likely8);
+                Cv2.BitwiseOr(region, likely8, region);
+            }
+
+            // Into the layer whose colour is closest to what was clicked (the only layer, for one-layer modes).
+            var target = layers[0];
+            if (layers.Count > 1)
+            {
+                var c = prepared.At<Vec3b>(seed.Y, seed.X);
+                target = layers.OrderBy(l => Math.Pow(l.Color.Val0 - c.Item0, 2) + Math.Pow(l.Color.Val1 - c.Item1, 2) + Math.Pow(l.Color.Val2 - c.Item2, 2)).First();
+            }
+            Cv2.BitwiseOr(target.Mask, region, target.Mask);
+        }
+    }
 
     /// <summary>Scale factor for pixel-sized parameters: they are tuned for a 1600 px picture.</summary>
     internal static double PixelScale(Mat m) => Math.Max(m.Cols, m.Rows) / 1600.0;
@@ -194,7 +287,7 @@ public static class Detector
 
     // ---------------------------------------------------------------- Edges
 
-    static Detection Edges(Signals signals, TraceSettings s)
+    static Detection Edges(Signals signals, TraceSettings s, Mat? addMask)
     {
         var sensitivity = s.Threshold / 100.0;
         if (s.UseAiEdges && signals.EdgeFused is not null && signals.EdgeAverage is not null)
@@ -205,6 +298,14 @@ public static class Detector
             Cv2.Max(signals.EdgeFused, signals.EdgeAverage, richer);
             using var map = new Mat();
             Cv2.AddWeighted(signals.EdgeFused, 1 - detail, richer, detail, 0, map);
+            if (addMask is not null)
+            {
+                // Inside Focus circles use the richer map (faint edges too), the close-up pass, and boost it.
+                using var inside = MaskOf(addMask);
+                richer.CopyTo(map, inside);
+                Focus.MergeInto(map, signals.Focus);
+                BoostInside(map, addMask);
+            }
             return Detection.FromStrokes(Hysteresis(map, sensitivity));
         }
 
@@ -213,6 +314,21 @@ public static class Detector
         var high = 220 - 180 * sensitivity;
         var edges = new Mat();
         Cv2.Canny(gray, edges, high * 0.45, high, 3, true);
+        if (addMask is not null)
+        {
+            // Inside Add circles, a much more sensitive Canny.
+            using var more = new Mat();
+            Cv2.Canny(gray, more, high * 0.45 * 0.35, high * 0.35, 3, true);
+            using var inside = MaskOf(addMask);
+            more.CopyTo(edges, inside);
+            using var close = new Mat(edges.Size(), MatType.CV_32F, Scalar.All(0));
+            Focus.MergeInto(close, signals.Focus);
+            using var closeLines = new Mat();
+            Cv2.Threshold(close, closeLines, 0.35, 255, ThresholdTypes.Binary);
+            using var close8 = new Mat();
+            closeLines.ConvertTo(close8, MatType.CV_8U);
+            Cv2.BitwiseOr(edges, close8, edges);
+        }
         // Canny lines are one pixel wide; thicken a little so gaps of a pixel join before thinning.
         using var kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(3, 3));
         Cv2.Dilate(edges, edges, kernel);
@@ -221,22 +337,50 @@ public static class Detector
 
     // ---------------------------------------------------------------- Line art
 
-    static Detection LineArt(Signals signals, TraceSettings s)
+    static Detection LineArt(Signals signals, TraceSettings s, Mat? addMask)
     {
         var sensitivity = s.Threshold / 100.0;
         if (signals.LineInk is not null)
-            return Detection.FromStrokes(Hysteresis(signals.LineInk, sensitivity));
+        {
+            if (addMask is null) return Detection.FromStrokes(Hysteresis(signals.LineInk, sensitivity));
+            // The network may leave something out entirely (eyes, say): inside Add circles also take the built-in
+            // drawing, at a finer scale, and boost it all.
+            using var ink = signals.LineInk.Clone();
+            using var local = Xdog(signals.Prepared, Math.Min(1, s.Detail / 100.0 + 0.3));
+            using var inside = MaskOf(addMask);
+            using var both = new Mat();
+            Cv2.Max(ink, local, both);
+            both.CopyTo(ink, inside);
+            Focus.MergeInto(ink, signals.Focus);
+            BoostInside(ink, addMask);
+            return Detection.FromStrokes(Hysteresis(ink, sensitivity));
+        }
 
         // No line-drawing model: combine the built-in XDoG drawing (dark lines, eyes, brows) with TEED's edges
         // (contours, jaw, nose) when the edge model is there. Either alone draws a face noticeably worse.
-        using var ink = Xdog(signals.Prepared, s.Detail / 100.0);
+        using var drawn = Xdog(signals.Prepared, s.Detail / 100.0);
         if (signals.EdgeFused is not null)
         {
             using var edges = new Mat();
             signals.EdgeFused.ConvertTo(edges, MatType.CV_32F, 0.85);
-            Cv2.Max(ink, edges, ink);
+            Cv2.Max(drawn, edges, drawn);
         }
-        return Detection.FromStrokes(Hysteresis(ink, sensitivity));
+        if (addMask is not null)
+        {
+            Focus.MergeInto(drawn, signals.Focus);
+            BoostInside(drawn, addMask);
+        }
+        return Detection.FromStrokes(Hysteresis(drawn, sensitivity));
+    }
+
+    /// <summary>8-bit mask of where a soft mask is above one half.</summary>
+    static Mat MaskOf(Mat soft)
+    {
+        using var binary = new Mat();
+        Cv2.Threshold(soft, binary, 0.5, 255, ThresholdTypes.Binary);
+        var mask = new Mat();
+        binary.ConvertTo(mask, MatType.CV_8U);
+        return mask;
     }
 
     /// <summary>

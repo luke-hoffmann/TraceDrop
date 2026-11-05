@@ -113,7 +113,10 @@ public static class Vectorizer
         var minArea = Cleanup.MinFeatureArea(s.Detail, width, height);
         var minLength = Math.Max(3, Math.Sqrt(minArea) * 1.6);
         var spur = Math.Max(3, (8 - 6 * s.Detail / 100.0) * Math.Max(0.5, Math.Max(width, height) / 1600.0));
-        foreach (var chain in Skeleton.Centerlines(pixels, width, height, spur, minLength))
+        var focus = Cleanup.FocusCircles(width, height, s.Picks);
+        Func<Vec2, bool>? relaxed = focus.Count == 0 ? null
+            : p => focus.Any(f => Math.Pow(p.X - f.Center.X, 2) + Math.Pow(p.Y - f.Center.Y, 2) <= f.Radius * f.Radius);
+        foreach (var chain in Skeleton.Centerlines(pixels, width, height, spur, minLength, relaxed))
             yield return new RawPath(chain.Points, chain.Closed, PathRole.Stroke, "LINES", (20, 20, 20));
     }
 

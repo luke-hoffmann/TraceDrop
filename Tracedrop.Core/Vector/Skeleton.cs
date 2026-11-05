@@ -257,8 +257,13 @@ public static class Skeleton
     /// Thins, then removes spurs (dead-end branches shorter than <paramref name="spurLength"/>) and chains
     /// shorter than <paramref name="minLength"/>, re-tracing after each pass so junctions that lose a branch merge.
     /// </summary>
-    public static List<Chain> Centerlines(byte[] strokeMask, int width, int height, double spurLength, double minLength)
+    public static List<Chain> Centerlines(byte[] strokeMask, int width, int height, double spurLength, double minLength,
+        Func<Vec2, bool>? relaxedAt = null)
     {
+        // Inside focus circles short strokes (eyelids, glasses frames) are wanted: prune there much less.
+        bool Relaxed(Chain c) => relaxedAt is not null && c.Points.Any(relaxedAt);
+        double Min(Chain c) => Relaxed(c) ? minLength * 0.25 : minLength;
+        double Spur(Chain c) => Relaxed(c) ? spurLength * 0.5 : spurLength;
         var pixels = (byte[])strokeMask.Clone();
         Thin(pixels, width, height);
         List<Chain> chains = Trace(pixels, width, height);
@@ -268,9 +273,9 @@ public static class Skeleton
             foreach (var chain in chains)
             {
                 var length = Geometry2D.PolylineLength(chain.Points, chain.Closed);
-                var spur = !chain.Closed && (chain.StartIsEnd ^ chain.EndIsEnd) && length < spurLength;
-                var isolated = !chain.Closed && chain.StartIsEnd && chain.EndIsEnd && length < minLength;
-                var tinyLoop = chain.Closed && length < minLength;
+                var spur = !chain.Closed && (chain.StartIsEnd ^ chain.EndIsEnd) && length < Spur(chain);
+                var isolated = !chain.Closed && chain.StartIsEnd && chain.EndIsEnd && length < Min(chain);
+                var tinyLoop = chain.Closed && length < Min(chain);
                 if (!spur && !isolated && !tinyLoop) continue;
                 // Erase the chain but keep its junction end, which other chains still use.
                 var points = chain.Points;
@@ -287,6 +292,6 @@ public static class Skeleton
             if (!removed) break;
             chains = Trace(pixels, width, height);
         }
-        return chains.Where(c => Geometry2D.PolylineLength(c.Points, c.Closed) >= Math.Max(2, minLength * 0.5)).ToList();
+        return chains.Where(c => Geometry2D.PolylineLength(c.Points, c.Closed) >= Math.Max(2, Min(c) * 0.5)).ToList();
     }
 }

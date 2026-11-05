@@ -57,6 +57,8 @@ public sealed class TraceJob : IDisposable
     string? _lineKey;
     Mat? _lineInk;
 
+    readonly Dictionary<string, FocusMap> _focus = new();
+
     string? _detectKey;
     Detection? _detected;
 
@@ -214,10 +216,12 @@ public sealed class TraceJob : IDisposable
 
             Lap("edge model");
             // 5. Detect.
-            var detectKey = Key(prepareKey, needsEdges && _edges is not null, lineInk is not null, s.Mode, s.Detail, s.Threshold, s.AutoThreshold, s.Colors, s.UseAiEdges, subject is not null, subjectFromAlpha);
+            var detectKey = Key(prepareKey, needsEdges && _edges is not null, lineInk is not null,
+                string.Join(";", s.Picks.Where(p => p.Kind == PickKind.Add).Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Radius:0.####}")), s.Mode, s.Detail, s.Threshold, s.AutoThreshold, s.Colors, s.UseAiEdges, subject is not null, subjectFromAlpha);
             if (_detectKey != detectKey || _detected is null)
             {
                 DisposeFrom(Stage.Detected);
+                var focus = s.Mode is TraceMode.Edges or TraceMode.LineArt ? FocusMaps(prepareKey, s) : new List<FocusMap>();
                 var signals = new Signals
                 {
                     Prepared = _prepared,
@@ -225,7 +229,8 @@ public sealed class TraceJob : IDisposable
                     SubjectFromAlpha = subjectFromAlpha,
                     EdgeFused = needsEdges ? _edges?.Fused : null,
                     EdgeAverage = needsEdges ? _edges?.Average : null,
-                    LineInk = lineInk
+                    LineInk = lineInk,
+                    Focus = focus
                 };
                 _detected = Detector.Detect(signals, s);
                 _detectKey = detectKey;
@@ -234,7 +239,8 @@ public sealed class TraceJob : IDisposable
             cancel.ThrowIfCancellationRequested();
 
             // 6. Clean up, then size: OutputSize is the traced shape's longest side before any offset.
-            var cleanKey = Key(detectKey, s.CloseGaps, s.FillHoles, s.Keep, string.Join(";", s.Picks.Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Keep}")),
+            var cleanKey = Key(detectKey, s.CloseGaps, s.FillHoles, s.Keep,
+                string.Join(";", s.Picks.Where(p => p.Kind != PickKind.Add).Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Kind}")),
                 s.Offset, s.OutputSize);
             if (_cleanKey != cleanKey || _cleaned is null)
             {
@@ -250,7 +256,7 @@ public sealed class TraceJob : IDisposable
             cancel.ThrowIfCancellationRequested();
 
             // 7. Trace outlines / centerlines (cached: fitting sliders don't re-trace).
-            var traceKey = Key(cleanKey, s.Strokes, s.StrokeWidth, s.Detail);
+            var traceKey = Key(cleanKey, s.Strokes, s.StrokeWidth, s.Detail, string.Join(";", s.Picks.Where(p => p.Kind == PickKind.Add).Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Radius:0.####}")));
             if (_traceKey != traceKey || _raw is null)
             {
                 _raw = Vectorizer.Extract(_cleaned, s, cancel);
@@ -286,6 +292,30 @@ public sealed class TraceJob : IDisposable
         }
     }
 
+    /// <summary>Close-up passes for the Focus areas, cached per prepared picture and circle.</summary>
+    List<FocusMap> FocusMaps(string prepareKey, TraceSettings s)
+    {
+        var maps = new List<FocusMap>();
+        var wanted = new HashSet<string>();
+        foreach (var p in s.Picks.Where(p => p.Kind == PickKind.Add))
+        {
+            var key = Key(prepareKey, s.Mode, s.UseAiLineArt, Math.Round(s.Detail / 10), p.X.ToString("0.####"), p.Y.ToString("0.####"), p.Radius.ToString("0.####"));
+            wanted.Add(key);
+            if (!_focus.TryGetValue(key, out var map))
+            {
+                map = Focus.Compute(_prepared!, p, _models, s);
+                _focus[key] = map;
+            }
+            maps.Add(map);
+        }
+        foreach (var stale in _focus.Keys.Where(k => !wanted.Contains(k)).ToList())
+        {
+            _focus[stale].Dispose();
+            _focus.Remove(stale);
+        }
+        return maps;
+    }
+
     static string Key(params object[] parts) =>
         string.Join("|", parts.Select(p => p is double d ? d.ToString("R", System.Globalization.CultureInfo.InvariantCulture) : p?.ToString() ?? ""));
 
@@ -304,6 +334,8 @@ public sealed class TraceJob : IDisposable
             _prepared?.Dispose(); _prepared = null; _prepareKey = null;
             DisposeEdges();
             _lineInk?.Dispose(); _lineInk = null; _lineKey = null;
+            foreach (var map in _focus.Values) map.Dispose();
+            _focus.Clear();
         }
         if (stage <= Stage.Detected)
         {

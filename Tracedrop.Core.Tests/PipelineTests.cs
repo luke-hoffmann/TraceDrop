@@ -157,11 +157,11 @@ public class PipelineTests
         using var job = new TraceJob(Synthetic.Shapes(), NoModels);
         var s = Preset("Logo / artwork");
         // Keep only the ring (click on its body at x=520+75).
-        s.Picks = new() { new PickPoint(595 / 900.0, 180 / 600.0, true) };
+        s.Picks = new() { new PickPoint(595 / 900.0, 180 / 600.0, PickKind.Keep) };
         var kept = job.Run(s).Drawing;
         Assert.Equal(2, kept.Paths.Count); // ring outside + inside
         // Now drop the ring's hole instead.
-        s.Picks = new() { new PickPoint(520 / 900.0, 180 / 600.0, false) };
+        s.Picks = new() { new PickPoint(520 / 900.0, 180 / 600.0, PickKind.Remove) };
         var filled = job.Run(s).Drawing;
         Assert.DoesNotContain(filled.Paths, p => p.Role == PathRole.Hole);
         Assert.Equal(3, filled.Paths.Count);
@@ -248,5 +248,30 @@ public class PipelineTests
         Assert.Equal(1, reloads);
         Assert.Equal(1024, Math.Max(smaller.Width, smaller.Height));
         Assert.Equal(1200, job.SourceWidth);
+    }
+
+    [Fact]
+    public void Focus_area_finds_faint_detail_the_whole_picture_pass_misses()
+    {
+        // A strong outline plus faint "glasses" (5 grey levels of contrast) inside it.
+        var image = new Mat(600, 800, MatType.CV_8UC3, Scalar.All(235));
+        Cv2.Rectangle(image, new Rect(100, 100, 600, 400), Scalar.All(30), 5);
+        foreach (var cx in new[] { 330, 470 })
+            Cv2.Circle(image, new OpenCvSharp.Point(cx, 300), 45, Scalar.All(230), 3, LineTypes.AntiAlias);
+        var s = Preset("Sketch / drawing");
+        s.Threshold = 40;
+
+        int PathsNearGlasses(VectorDrawing d, double scale) =>
+            d.Paths.Count(p => p.Flatten(1).Any(v => Math.Abs(v.X / scale - 400) < 130 && Math.Abs(v.Y / scale - 300) < 60));
+
+        using var plain = new TraceJob(new LoadedImage(image.Clone(), null), NoModels);
+        var before = plain.Run(s);
+        var scale = before.Width / 800.0;
+        Assert.Equal(0, PathsNearGlasses(before.Drawing, scale));
+
+        s.Picks = new() { new PickPoint(400 / 800.0, 300 / 600.0, PickKind.Add, 0.2) };
+        using var focused = new TraceJob(new LoadedImage(image, null), NoModels);
+        var after = focused.Run(s);
+        Assert.True(PathsNearGlasses(after.Drawing, scale) >= 2, $"found {PathsNearGlasses(after.Drawing, scale)} paths at the glasses");
     }
 }

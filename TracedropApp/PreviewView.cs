@@ -54,8 +54,28 @@ sealed class PreviewView : Control
         _spinner.Tick += (_, _) => { _spinPhase = (_spinPhase + 1) % 12; Invalidate(new Rectangle(0, 0, Width, this.Px(48))); };
     }
 
-    /// <summary>Left click = keep the shape under the point, right click = drop it. Coordinates are 0..1 of the picture.</summary>
+    /// <summary>A click (or, for Focus, a dragged circle) on the picture. Coordinates are 0..1 of the picture.</summary>
     public event Action<PickPoint>? PickRequested;
+
+    /// <summary>A click on an existing marker: remove that pick (index into the picks given to SetDrawing).</summary>
+    public event Action<int>? PickRemoveRequested;
+
+    /// <summary>What a left click does. Right click always removes.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public PickKind Tool
+    {
+        get => _tool;
+        set { _tool = value; Invalidate(); }
+    }
+
+    /// <summary>Size of a clicked Focus circle, as a fraction of the picture's longest side (dragging sets it; Ctrl+scroll changes it).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public double FocusRadius { get; set; } = PickPoint.DefaultAddRadius;
+
+    PickKind _tool = PickKind.Keep;
+    bool _circling;
+    Point? _hoverAt;
+    SizeF _drawingSize;
 
     /// <summary>Width/height of the picture the vector coordinates refer to.</summary>
     public Size PictureSize { get; private set; }
@@ -121,6 +141,7 @@ sealed class PreviewView : Control
         if (!ReferenceEquals(drawing, _drawing))
         {
             _drawing = drawing;
+            _drawingSize = drawing is null ? SizeF.Empty : new SizeF((float)drawing.Width, (float)drawing.Height);
             _outlines?.Dispose(); _holes?.Dispose(); _strokes?.Dispose();
             _outlines = _holes = _strokes = null;
             if (drawing is not null)
@@ -229,8 +250,12 @@ sealed class PreviewView : Control
             var state = g.Save();
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TranslateTransform(_offset.X, _offset.Y);
-            g.ScaleTransform((float)_scale, (float)_scale);
-            var width = (float)(Math.Max(1.4, this.Px(2) * 0.9) / _scale);
+            // The drawing's own pixel size may differ from the photo on screen (another Resolution, or a photo
+            // still on its way): scale it onto the picture so the two always line up.
+            var kx = _drawingSize.Width > 0 ? PictureSize.Width / _drawingSize.Width : 1f;
+            var ky = _drawingSize.Height > 0 ? PictureSize.Height / _drawingSize.Height : 1f;
+            g.ScaleTransform((float)_scale * kx, (float)_scale * ky);
+            var width = (float)(Math.Max(1.4, this.Px(2) * 0.9) / (_scale * kx));
             var ink = _mode == PreviewMode.Lines ? Palette.Ink : Color.FromArgb(214, 32, 61);
             using (var pen = new Pen(ink, width) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
             {
@@ -248,24 +273,72 @@ sealed class PreviewView : Control
         DrawBusy(g);
     }
 
+    static readonly Color FocusColor = Color.FromArgb(0, 150, 136);
+
+    PointF ToScreen(double px, double py) =>
+        new((float)(_offset.X + px * PictureSize.Width * _scale), (float)(_offset.Y + py * PictureSize.Height * _scale));
+
+    float ScreenRadius(double fraction) => (float)(fraction * Math.Max(PictureSize.Width, PictureSize.Height) * _scale);
+
+    int MarkerRadius => this.Px(8);
+
     void DrawPicks(Graphics g)
     {
-        if (_picks.Count == 0 || PictureSize.IsEmpty) return;
+        if (PictureSize.IsEmpty) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var r = this.Px(7);
+        var r = MarkerRadius;
         foreach (var p in _picks)
         {
-            var x = (float)(_offset.X + p.X * PictureSize.Width * _scale);
-            var y = (float)(_offset.Y + p.Y * PictureSize.Height * _scale);
-            using var fill = new SolidBrush(p.Keep ? Palette.Accent : Palette.Red);
+            var c = ToScreen(p.X, p.Y);
+            if (p.Kind == PickKind.Add)
+            {
+                var rr = ScreenRadius(p.Radius > 0 ? p.Radius : PickPoint.DefaultAddRadius);
+                using var halo = new Pen(Color.FromArgb(150, Color.White), Math.Max(3f, this.Px(4)));
+                using var dash = new Pen(FocusColor, Math.Max(1.5f, this.Px(2))) { DashPattern = new[] { 4f, 3f } };
+                g.DrawEllipse(halo, c.X - rr, c.Y - rr, 2 * rr, 2 * rr);
+                g.DrawEllipse(dash, c.X - rr, c.Y - rr, 2 * rr, 2 * rr);
+            }
+            var color = p.Kind switch { PickKind.Keep => Palette.Accent, PickKind.Remove => Palette.Red, _ => FocusColor };
+            using var fill = new SolidBrush(color);
             using var ring = new Pen(Color.White, Math.Max(2f, this.Px(2)));
-            g.FillEllipse(fill, x - r, y - r, 2 * r, 2 * r);
-            g.DrawEllipse(ring, x - r, y - r, 2 * r, 2 * r);
+            g.FillEllipse(fill, c.X - r, c.Y - r, 2 * r, 2 * r);
+            g.DrawEllipse(ring, c.X - r, c.Y - r, 2 * r, 2 * r);
             using var mark = new Pen(Color.White, Math.Max(1.5f, this.Px(2))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
             var s = r * 0.45f;
-            if (p.Keep) g.DrawLines(mark, new[] { new PointF(x - s, y), new PointF(x - s * 0.2f, y + s * 0.8f), new PointF(x + s, y - s * 0.7f) });
-            else { g.DrawLine(mark, x - s, y - s, x + s, y + s); g.DrawLine(mark, x - s, y + s, x + s, y - s); }
+            switch (p.Kind)
+            {
+                case PickKind.Keep: g.DrawLines(mark, new[] { new PointF(c.X - s, c.Y), new PointF(c.X - s * 0.2f, c.Y + s * 0.8f), new PointF(c.X + s, c.Y - s * 0.7f) }); break;
+                case PickKind.Remove: g.DrawLine(mark, c.X - s, c.Y - s, c.X + s, c.Y + s); g.DrawLine(mark, c.X - s, c.Y + s, c.X + s, c.Y - s); break;
+                default: g.DrawLine(mark, c.X - s, c.Y, c.X + s, c.Y); g.DrawLine(mark, c.X, c.Y - s, c.X, c.Y + s); break;
+            }
         }
+
+        // The Focus tool shows the circle it will make: following the mouse, or being dragged out.
+        if (_tool == PickKind.Add && (_circling || _hoverAt is not null))
+        {
+            var centre = _circling ? _downAt : _hoverAt!.Value;
+            var rr = _circling ? DragRadius(_lastMove) : ScreenRadius(FocusRadius);
+            // Being dragged: full colour. Just following the mouse: a faint hint of the size a click would make.
+            var color = _circling ? FocusColor : Color.FromArgb(110, FocusColor);
+            using var pen = new Pen(color, _circling ? Math.Max(1.5f, this.Px(2)) : 1f) { DashPattern = new[] { 2f, 2f } };
+            g.DrawEllipse(pen, centre.X - rr, centre.Y - rr, 2 * rr, 2 * rr);
+        }
+    }
+
+    Point _lastMove;
+
+    float DragRadius(Point to) => (float)Math.Max(this.Px(6), Math.Sqrt(Math.Pow(to.X - _downAt.X, 2) + Math.Pow(to.Y - _downAt.Y, 2)));
+
+    /// <summary>Index of the pick marker under a screen point, or -1.</summary>
+    int MarkerAt(Point at)
+    {
+        var hit = MarkerRadius + this.Px(3);
+        for (var i = _picks.Count - 1; i >= 0; i--)
+        {
+            var c = ToScreen(_picks[i].X, _picks[i].Y);
+            if ((c.X - at.X) * (c.X - at.X) + (c.Y - at.Y) * (c.Y - at.Y) <= hit * hit) return i;
+        }
+        return -1;
     }
 
     void DrawBusy(Graphics g)
@@ -334,6 +407,13 @@ sealed class PreviewView : Control
     {
         base.OnMouseWheel(e);
         if (PictureSize.IsEmpty) return;
+        if (_tool == PickKind.Add && (ModifierKeys & Keys.Control) != 0)
+        {
+            // Ctrl+scroll sizes the Focus circle.
+            FocusRadius = Math.Clamp(FocusRadius * Math.Pow(1.0012, e.Delta), 0.01, 0.45);
+            Invalidate();
+            return;
+        }
         EnsureFit();
         var before = ToPicture(e.Location);
         var factor = Math.Pow(1.0015, e.Delta);
@@ -353,6 +433,9 @@ sealed class PreviewView : Control
         EnsureFit();
         _downOffset = _offset;
         _panning = false;
+        // With the Focus tool, a left drag that doesn't start on a marker draws the circle instead of panning.
+        _circling = _tool == PickKind.Add && e.Button == MouseButtons.Left && !PictureSize.IsEmpty && MarkerAt(e.Location) < 0;
+        _lastMove = e.Location;
         Capture = true;
     }
 
@@ -361,7 +444,14 @@ sealed class PreviewView : Control
         base.OnMouseMove(e);
         if (_downButton == MouseButtons.None || PictureSize.IsEmpty)
         {
-            Cursor = PictureSize.IsEmpty ? Cursors.Default : Cursors.Cross;
+            Cursor = PictureSize.IsEmpty ? Cursors.Default : MarkerAt(e.Location) >= 0 ? Cursors.Hand : Cursors.Cross;
+            if (_tool == PickKind.Add) { _hoverAt = e.Location; Invalidate(); }
+            return;
+        }
+        if (_circling)
+        {
+            _lastMove = e.Location;
+            Invalidate();
             return;
         }
         var dx = e.X - _downAt.X;
@@ -381,15 +471,45 @@ sealed class PreviewView : Control
         base.OnMouseUp(e);
         Capture = false;
         var wasPan = _panning;
+        var wasCircling = _circling;
         var button = _downButton;
         _downButton = MouseButtons.None;
         _panning = false;
+        _circling = false;
         Cursor = Cursors.Cross;
         if (wasPan || PictureSize.IsEmpty) return;
         if (button is not (MouseButtons.Left or MouseButtons.Right)) return;
+
+        if (wasCircling)
+        {
+            var dragged = DragRadius(e.Location) > this.Px(8);
+            if (dragged) FocusRadius = Math.Clamp(DragRadius(e.Location) / (Math.Max(PictureSize.Width, PictureSize.Height) * _scale), 0.01, 0.45);
+            var centre = ToPicture(_downAt);
+            if (centre.X < 0 || centre.Y < 0 || centre.X > PictureSize.Width || centre.Y > PictureSize.Height) { Invalidate(); return; }
+            PickRequested?.Invoke(new PickPoint(centre.X / PictureSize.Width, centre.Y / PictureSize.Height, PickKind.Add, FocusRadius));
+            return;
+        }
+
+        // Clicking a marker takes it away again.
+        var marker = MarkerAt(e.Location);
+        if (marker >= 0)
+        {
+            PickRemoveRequested?.Invoke(marker);
+            return;
+        }
         var p = ToPicture(e.Location);
         if (p.X < 0 || p.Y < 0 || p.X > PictureSize.Width || p.Y > PictureSize.Height) return;
-        PickRequested?.Invoke(new PickPoint(p.X / PictureSize.Width, p.Y / PictureSize.Height, button == MouseButtons.Left));
+        var kind = button == MouseButtons.Right ? PickKind.Remove : _tool;
+        PickRequested?.Invoke(new PickPoint(p.X / PictureSize.Width, p.Y / PictureSize.Height, kind,
+            kind == PickKind.Add ? FocusRadius : 0));
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (_hoverAt is null) return;
+        _hoverAt = null;
+        Invalidate();
     }
 
     protected override void OnDoubleClick(EventArgs e)

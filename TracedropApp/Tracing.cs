@@ -42,6 +42,8 @@ sealed class TraceItem : IDisposable
     public long PreviewVisit = -1;
     /// <summary>Selection visit the full photo was last sent for (the UI drops bitmaps when you leave a picture).</summary>
     public long PhotoVisit = -1;
+    /// <summary>Size of the photo last sent (a Resolution change makes a new working picture).</summary>
+    public OpenCvSharp.Size PhotoSize;
     /// <summary>When the job was last used, for least-recently-used eviction.</summary>
     public long LastUsed;
     public string ExportedFormats = "";
@@ -232,7 +234,13 @@ sealed class TraceWorker : IDisposable
             Bitmap? photo = null, prepared = null, detected = null;
             if (ReferenceEquals(item, _selected))
             {
-                if (item.PhotoVisit != visit) { photo = ToBitmap(item.Job.Working!); item.PhotoVisit = visit; }
+                var working = item.Job.Working!;
+                if (item.PhotoVisit != visit || item.PhotoSize != working.Size())
+                {
+                    photo = ToBitmap(working);
+                    item.PhotoVisit = visit;
+                    item.PhotoSize = working.Size();
+                }
                 prepared = ToBitmap(item.Job.Prepared!);
                 using var detectedMat = item.Job.Detected!.RenderPreview();
                 detected = ToBitmap(detectedMat);
