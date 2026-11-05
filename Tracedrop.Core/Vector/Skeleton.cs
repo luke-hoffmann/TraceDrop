@@ -257,13 +257,10 @@ public static class Skeleton
     /// Thins, then removes spurs (dead-end branches shorter than <paramref name="spurLength"/>) and chains
     /// shorter than <paramref name="minLength"/>, re-tracing after each pass so junctions that lose a branch merge.
     /// </summary>
-    public static List<Chain> Centerlines(byte[] strokeMask, int width, int height, double spurLength, double minLength,
-        Func<Vec2, bool>? relaxedAt = null)
+    public static List<Chain> Centerlines(byte[] strokeMask, int width, int height, double spurLength, double minLength)
     {
-        // Inside focus circles short strokes (eyelids, glasses frames) are wanted: prune there much less.
-        bool Relaxed(Chain c) => relaxedAt is not null && c.Points.Any(relaxedAt);
-        double Min(Chain c) => Relaxed(c) ? minLength * 0.25 : minLength;
-        double Spur(Chain c) => Relaxed(c) ? spurLength * 0.5 : spurLength;
+        double Min(Chain c) => minLength;
+        double Spur(Chain c) => spurLength;
         var pixels = (byte[])strokeMask.Clone();
         Thin(pixels, width, height);
         List<Chain> chains = Trace(pixels, width, height);
@@ -292,6 +289,174 @@ public static class Skeleton
             if (!removed) break;
             chains = Trace(pixels, width, height);
         }
+        // Half the stroke's width at each skeleton pixel, so knots are judged against how thick the line is there.
+        float[] radius;
+        using (var mask = new OpenCvSharp.Mat(height, width, OpenCvSharp.MatType.CV_8U))
+        using (var dist = new OpenCvSharp.Mat())
+        {
+            mask.SetArray(strokeMask);
+            OpenCvSharp.Cv2.DistanceTransform(mask, dist, OpenCvSharp.DistanceTypes.L2, OpenCvSharp.DistanceTransformMasks.Mask3);
+            dist.GetArray(out radius);
+        }
+        double RadiusAt(Vec2 p)
+        {
+            var x = Math.Clamp((int)p.X, 0, width - 1);
+            var y = Math.Clamp((int)p.Y, 0, height - 1);
+            return radius[y * width + x];
+        }
+        chains = MergeJunctions(chains, Math.Max(4, spurLength * 1.5), RadiusAt);
         return chains.Where(c => Geometry2D.PolylineLength(c.Points, c.Closed) >= Math.Max(2, Min(c) * 0.5)).ToList();
+    }
+
+    /// <summary>
+    /// Thick strokes thin into small knots where they turn or cross: a tiny triangle at a corner, two junctions
+    /// joined by a short bridge at a crossing. Collapses each knot (junctions joined by chains up to
+    /// <paramref name="maxBridge"/> long, or touching) into one point, then joins lines that simply pass through
+    /// a knot, so a drawn rectangle comes out as one closed path with sharp corners instead of twelve pieces.
+    /// </summary>
+    internal static List<Chain> MergeJunctions(List<Chain> chains, double maxBridge, Func<Vec2, double>? radiusAt = null)
+    {
+        static (int, int) Key(Vec2 p) => ((int)Math.Floor(p.X), (int)Math.Floor(p.Y));
+        var parent = new Dictionary<(int, int), (int, int)>();
+        (int, int) Find((int, int) a)
+        {
+            if (!parent.TryGetValue(a, out var p)) { parent[a] = a; return a; }
+            while (!p.Equals(a)) { var gp = parent[p]; parent[a] = gp; a = p; p = gp; }
+            return a;
+        }
+        void Union((int, int) a, (int, int) b)
+        {
+            var ra = Find(a);
+            var rb = Find(b);
+            if (!ra.Equals(rb)) parent[ra] = rb;
+        }
+
+        // Junction ends (not free ends, not loops) and the short junction-to-junction bridges between them.
+        var open = chains.Where(c => !c.Closed && c.Points.Count > 0).ToList();
+        foreach (var c in open)
+        {
+            if (!c.StartIsEnd) Find(Key(c.Points[0]));
+            if (!c.EndIsEnd) Find(Key(c.Points[^1]));
+        }
+        var bridges = new HashSet<Chain>(ReferenceEqualityComparer.Instance);
+        foreach (var c in open)
+        {
+            if (c.StartIsEnd || c.EndIsEnd) continue;
+            // A link no longer than the stroke is wide is part of the knot, not a line of its own.
+            var limit = radiusAt is null ? maxBridge : Math.Max(maxBridge, 2.5 * Math.Max(radiusAt(c.Points[0]), radiusAt(c.Points[^1])) + 1);
+            if (Geometry2D.PolylineLength(c.Points, false) > limit) continue;
+            bridges.Add(c);
+            Union(Key(c.Points[0]), Key(c.Points[^1]));
+        }
+        // Junction pixels that touch are one junction.
+        foreach (var k in parent.Keys.ToList())
+            for (var dy = -1; dy <= 1; dy++)
+                for (var dx = -1; dx <= 1; dx++)
+                    if ((dx != 0 || dy != 0) && parent.ContainsKey((k.Item1 + dx, k.Item2 + dy))) Union(k, (k.Item1 + dx, k.Item2 + dy));
+        if (parent.Count == 0) return chains;
+
+        // Each knot's centre: the mean of its junction pixels.
+        var sums = new Dictionary<(int, int), (double X, double Y, int N)>();
+        foreach (var k in parent.Keys.ToList())
+        {
+            var r = Find(k);
+            sums.TryGetValue(r, out var acc);
+            sums[r] = (acc.X + k.Item1 + 0.5, acc.Y + k.Item2 + 0.5, acc.N + 1);
+        }
+        Vec2 Centre((int, int) root) => sums[root] is var t ? new Vec2(t.X / t.N, t.Y / t.N) : default;
+
+        // Pieces: open chains (bridges dropped), each end snapped to its knot's centre.
+        var pieces = new List<(List<Vec2> Points, (int, int)? A, (int, int)? B)>();
+        var result = chains.Where(c => c.Closed).ToList();
+        foreach (var c in open)
+        {
+            if (bridges.Contains(c)) continue;
+            var pts = c.Points.ToList();
+            (int, int)? a = c.StartIsEnd ? null : Find(Key(pts[0]));
+            (int, int)? b = c.EndIsEnd ? null : Find(Key(pts[^1]));
+            if (a is { } ra) pts[0] = Centre(ra);
+            if (b is { } rb) pts[^1] = Centre(rb);
+            pieces.Add((pts, a, b));
+        }
+
+        // Join pieces through knots that exactly two piece-ends meet at.
+        var count = new Dictionary<(int, int), int>();
+        foreach (var (_, a, b) in pieces)
+        {
+            if (a is { } ka) count[ka] = count.GetValueOrDefault(ka) + 1;
+            if (b is { } kb) count[kb] = count.GetValueOrDefault(kb) + 1;
+        }
+        bool PassThrough((int, int)? k) => k is { } key && count.GetValueOrDefault(key) == 2;
+        var used = new bool[pieces.Count];
+        var byKnot = new Dictionary<(int, int), List<int>>();
+        for (var i = 0; i < pieces.Count; i++)
+        {
+            foreach (var k in new[] { pieces[i].A, pieces[i].B })
+                if (PassThrough(k)) (byKnot.TryGetValue(k!.Value, out var l) ? l : byKnot[k.Value] = new List<int>()).Add(i);
+        }
+        int Other((int, int) knot, int self)
+        {
+            var list = byKnot[knot];
+            return list[0] == self && list.Count > 1 && list[1] != self ? list[1] : list[0] != self ? list[0] : -1;
+        }
+
+        for (var i = 0; i < pieces.Count; i++)
+        {
+            if (used[i]) continue;
+            // Walk back to a start: a free end or a knot that isn't a pass-through (or around a loop).
+            var startIndex = i;
+            var startReversed = false;
+            var guard = 0;
+            while (guard++ < pieces.Count)
+            {
+                var (pts, a, b) = pieces[startIndex];
+                var tail = startReversed ? b : a;
+                if (!PassThrough(tail)) break;
+                var prev = Other(tail!.Value, startIndex);
+                if (prev < 0 || prev == i && guard > 1) break;
+                if (prev == startIndex) break; // a piece looping onto itself
+                startReversed = pieces[prev].A.Equals(tail) && !pieces[prev].B.Equals(tail) ? true : false;
+                // Entering prev at 'tail': prev must end at tail, so walk it forward if its B is tail, else reversed.
+                startReversed = !pieces[prev].B.Equals(tail);
+                startIndex = prev;
+                if (startIndex == i) break;
+            }
+
+            var points = new List<Vec2>();
+            var index = startIndex;
+            var reversed = startReversed;
+            var closed = false;
+            while (true)
+            {
+                used[index] = true;
+                var (pts, a, b) = pieces[index];
+                var seq = reversed ? Enumerable.Reverse(pts).ToList() : pts;
+                if (points.Count > 0) seq = seq.Skip(1).ToList();
+                points.AddRange(seq);
+                var head = reversed ? a : b;
+                if (!PassThrough(head)) break;
+                var next = Other(head!.Value, index);
+                if (next < 0) break;
+                if (next == index)
+                {
+                    // Both ends of one piece at the same knot: a loop.
+                    closed = true;
+                    break;
+                }
+                if (used[next])
+                {
+                    closed = next == startIndex;
+                    break;
+                }
+                reversed = !pieces[next].A.Equals(head);
+                index = next;
+            }
+            if (closed && points.Count > 2 && Vec2.Distance(points[0], points[^1]) < 1e-9) points.RemoveAt(points.Count - 1);
+            var startFree = !closed && pieces[startIndex] is var sp && (startReversed ? sp.B : sp.A) is null;
+            var endPiece = pieces[index];
+            var endFree = !closed && (reversed ? endPiece.A : endPiece.B) is null;
+            result.Add(new Chain(points, closed, startFree, endFree));
+        }
+        return result;
     }
 }

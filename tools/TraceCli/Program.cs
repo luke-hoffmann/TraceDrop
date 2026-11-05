@@ -3,6 +3,7 @@ using System.Text.Json;
 using OpenCvSharp;
 using Tracedrop.Core;
 using Tracedrop.Core.Ai;
+using Tracedrop.Core.Editing;
 using Tracedrop.Core.Export;
 using Tracedrop.Core.Imaging;
 using Tracedrop.Core.Vector;
@@ -15,6 +16,7 @@ var inputs = new List<string>();
 var presetName = Presets.Default.Name;
 var overrides = new List<(string Key, string Value)>();
 var picks = new List<PickPoint>();
+var regions = new List<GuideRegion>();
 var outDir = Directory.GetCurrentDirectory();
 var formats = new List<ExportFormat> { ExportFormat.Dxf, ExportFormat.Svg };
 var render = false;
@@ -35,11 +37,24 @@ for (var i = 0; i < args.Length; i++)
         case "--out": outDir = args[++i]; break;
         case "--pick":
         {
-            // --pick keep|remove|focus,X,Y[,R]  (X, Y in 0..1 of the picture; R a fraction of its longest side)
+            // --pick keep|remove,X,Y  (X, Y in 0..1 of the picture)
             var parts = args[++i].Split(',');
-            var kind = parts[0].ToLowerInvariant() switch { "keep" => PickKind.Keep, "remove" => PickKind.Remove, _ => PickKind.Add };
+            var kind = parts[0].Equals("keep", StringComparison.OrdinalIgnoreCase) ? PickKind.Keep : PickKind.Remove;
             double D(int k) => double.Parse(parts[k], CultureInfo.InvariantCulture);
-            picks.Add(new PickPoint(D(1), D(2), kind, parts.Length > 3 ? D(3) : 0));
+            picks.Add(new PickPoint(D(1), D(2), kind));
+            break;
+        }
+        case "--find":
+        case "--erase":
+        {
+            // --find X,Y,R[,AMOUNT] / --erase X,Y,R : a circle (centre in 0..1 of the picture, R a fraction of its longest side)
+            var kind = args[i] == "--find" ? RegionKind.Find : RegionKind.Erase;
+            var parts = args[++i].Split(',').Select(v => double.Parse(v, CultureInfo.InvariantCulture)).ToArray();
+            regions.Add(new GuideRegion
+            {
+                Kind = kind, Shape = RegionShape.Circle, Points = { new NormPoint(parts[0], parts[1]) }, Size = parts[2],
+                Amount = parts.Length > 3 ? (int)parts[3] : 0
+            });
             break;
         }
         case "--formats":
@@ -70,7 +85,7 @@ for (var i = 0; i < args.Length; i++)
             return 0;
         case "-h":
         case "--help":
-            Console.WriteLine("tracedrop-cli <image>... [--preset NAME] [--set Key=Value]... [--pick keep|remove|focus,X,Y[,R]]... [--out DIR] [--formats dxf,svg,pdf] [--render] [--models DIR] [--cpu] [--list-presets]");
+            Console.WriteLine("tracedrop-cli <image>... [--preset NAME] [--set Key=Value]... [--pick keep|remove,X,Y]... [--find X,Y,R[,AMOUNT]]... [--erase X,Y,R]... [--out DIR] [--formats dxf,svg,pdf] [--render] [--models DIR] [--cpu] [--list-presets]");
             return 0;
         default: inputs.Add(args[i]); break;
     }
@@ -91,6 +106,7 @@ if (preset is null)
 
 var settings = ApplyOverrides(preset.Settings.Clone(), overrides);
 settings.Picks.AddRange(picks);
+settings.Regions.AddRange(regions);
 Directory.CreateDirectory(outDir);
 using var models = modelDir is null ? new ModelStore() : new ModelStore(modelDir);
 models.PreferGpu = !cpu;

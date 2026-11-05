@@ -128,6 +128,9 @@ public sealed class VectorPath
     public (byte R, byte G, byte B) Color { get; init; } = (0, 0, 0);
     /// <summary>Set when the path is an exact circle.</summary>
     public (Vec2 Center, double Radius)? Circle { get; init; }
+    /// <summary>Index of the user's own path this came from, or -1 for a traced (AI) path.</summary>
+    public int ManualIndex { get; init; } = -1;
+    public bool IsManual => ManualIndex >= 0;
 
     public int EntityCount => Circle is not null ? 1 : Segments.Count;
 
@@ -138,7 +141,8 @@ public sealed class VectorPath
         Role = Role,
         Layer = Layer,
         Color = Color,
-        Circle = Circle is { } c ? (map(c.Center), c.Radius * scale) : null
+        Circle = Circle is { } c ? (map(c.Center), c.Radius * scale) : null,
+        ManualIndex = ManualIndex
     };
 
     /// <summary>All points along the path (for drawing), starting with the first point.</summary>

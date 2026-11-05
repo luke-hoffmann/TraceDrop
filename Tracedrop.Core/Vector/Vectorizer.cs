@@ -32,7 +32,8 @@ public static class Vectorizer
         Fit(Extract(cleaned, s, cancel), cleaned.Width, cleaned.Height, s, cancel);
 
     /// <summary>Traces the cleaned detection into raw point paths (outer outlines first, then holes, then lines).</summary>
-    public static List<RawPath> Extract(Detection cleaned, TraceSettings s, CancellationToken cancel = default)
+    /// <param name="reference">Picture size the length rules are taken from (see <see cref="Cleanup.Apply"/>).</param>
+    public static List<RawPath> Extract(Detection cleaned, TraceSettings s, CancellationToken cancel = default, OpenCvSharp.Size? reference = null)
     {
         var width = cleaned.Width;
         var height = cleaned.Height;
@@ -41,7 +42,7 @@ public static class Vectorizer
         {
             using var strokes = cleaned.Strokes!.Clone();
             if (s.Strokes == StrokeStyle.Centerline)
-                paths.AddRange(Centerlines(strokes, s));
+                paths.AddRange(Centerlines(strokes, s, reference ?? new OpenCvSharp.Size(width, height)));
             else
             {
                 if (s.StrokeWidth > 0.25) UniformWidth(strokes, s.StrokeWidth * Math.Max(0.5, Math.Max(width, height) / 1600.0));
@@ -105,18 +106,15 @@ public static class Vectorizer
         }
     }
 
-    static IEnumerable<RawPath> Centerlines(Mat strokes, TraceSettings s)
+    static IEnumerable<RawPath> Centerlines(Mat strokes, TraceSettings s, OpenCvSharp.Size reference)
     {
         var width = strokes.Cols;
         var height = strokes.Rows;
         strokes.GetArray(out byte[] pixels);
-        var minArea = Cleanup.MinFeatureArea(s.Detail, width, height);
+        var minArea = Cleanup.MinFeatureArea(s.Detail, reference.Width, reference.Height);
         var minLength = Math.Max(3, Math.Sqrt(minArea) * 1.6);
-        var spur = Math.Max(3, (8 - 6 * s.Detail / 100.0) * Math.Max(0.5, Math.Max(width, height) / 1600.0));
-        var focus = Cleanup.FocusCircles(width, height, s.Picks);
-        Func<Vec2, bool>? relaxed = focus.Count == 0 ? null
-            : p => focus.Any(f => Math.Pow(p.X - f.Center.X, 2) + Math.Pow(p.Y - f.Center.Y, 2) <= f.Radius * f.Radius);
-        foreach (var chain in Skeleton.Centerlines(pixels, width, height, spur, minLength, relaxed))
+        var spur = Math.Max(3, (8 - 6 * s.Detail / 100.0) * Math.Max(0.5, Math.Max(reference.Width, reference.Height) / 1600.0));
+        foreach (var chain in Skeleton.Centerlines(pixels, width, height, spur, minLength))
             yield return new RawPath(chain.Points, chain.Closed, PathRole.Stroke, "LINES", (20, 20, 20));
     }
 

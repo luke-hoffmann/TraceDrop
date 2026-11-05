@@ -4,6 +4,7 @@ using netDxf;
 using netDxf.Entities;
 using OpenCvSharp;
 using Tracedrop.Core.Ai;
+using Tracedrop.Core.Editing;
 using Tracedrop.Core.Export;
 using Tracedrop.Core.Imaging;
 using Tracedrop.Core.Vector;
@@ -250,28 +251,190 @@ public class PipelineTests
         Assert.Equal(1200, job.SourceWidth);
     }
 
-    [Fact]
-    public void Focus_area_finds_faint_detail_the_whole_picture_pass_misses()
+    static GuideRegion Circle(RegionKind kind, double x, double y, double r, int amount = 0) => new()
     {
-        // A strong outline plus faint "glasses" (5 grey levels of contrast) inside it.
+        Kind = kind, Shape = RegionShape.Circle, Points = { new NormPoint(x, y) }, Size = r, Amount = amount
+    };
+
+    static int PathsNear(VectorDrawing d, double scale, double x, double y, double dx, double dy) =>
+        d.Paths.Count(p => !p.IsManual && Dense(p).Any(v => Math.Abs(v.X / scale - x) < dx && Math.Abs(v.Y / scale - y) < dy));
+
+    /// <summary>Points every ~2 px along the path (Flatten gives only the ends of straight lines).</summary>
+    static IEnumerable<Vec2> Dense(VectorPath p)
+    {
+        var pts = p.Flatten(1);
+        for (var i = 0; i + 1 < pts.Count; i++)
+        {
+            var steps = Math.Max(1, (int)(Vec2.Distance(pts[i], pts[i + 1]) / 2));
+            for (var k = 0; k < steps; k++) yield return pts[i] + (pts[i + 1] - pts[i]) * (k / (double)steps);
+        }
+        if (pts.Count > 0) yield return pts[^1];
+    }
+
+    /// <summary>A strong frame plus faint "glasses" (5 grey levels of contrast) inside it.</summary>
+    static Mat FaintGlasses()
+    {
         var image = new Mat(600, 800, MatType.CV_8UC3, Scalar.All(235));
         Cv2.Rectangle(image, new Rect(100, 100, 600, 400), Scalar.All(30), 5);
         foreach (var cx in new[] { 330, 470 })
             Cv2.Circle(image, new OpenCvSharp.Point(cx, 300), 45, Scalar.All(230), 3, LineTypes.AntiAlias);
+        return image;
+    }
+
+    [Fact]
+    public void A_drawn_rectangle_and_circles_trace_as_single_closed_paths()
+    {
+        var image = FaintGlasses();
+        foreach (var cx in new[] { 330, 470 })
+            Cv2.Circle(image, new OpenCvSharp.Point(cx, 300), 45, Scalar.All(40), 3, LineTypes.AntiAlias);
+        using var job = new TraceJob(new LoadedImage(image, null), NoModels);
+        var d = job.Run(Preset("Sketch / drawing")).Drawing;
+        Assert.Equal(3, d.Paths.Count);
+        Assert.All(d.Paths, p => Assert.True(p.Closed || p.Circle is not null));
+    }
+
+    [Fact]
+    public void Crossing_lines_meet_at_one_point()
+    {
+        // A thick X and a plus: each should trace as two straight lines crossing (or four arms meeting), never with a
+        // short bridge piece between two junctions.
+        var mask = new Mat(400, 400, MatType.CV_8U, Scalar.All(0));
+        Cv2.Line(mask, new OpenCvSharp.Point(40, 40), new OpenCvSharp.Point(360, 360), Scalar.All(255), 11);
+        Cv2.Line(mask, new OpenCvSharp.Point(360, 40), new OpenCvSharp.Point(40, 360), Scalar.All(255), 11);
+        mask.GetArray(out byte[] px);
+        var chains = Skeleton.Centerlines(px, 400, 400, 5, 8);
+        Assert.InRange(chains.Count, 2, 4);
+        Assert.All(chains, c => Assert.True(Geometry2D.PolylineLength(c.Points, false) > 100));
+        var ends = chains.SelectMany(c => new[] { c.Points[0], c.Points[^1] }).Where(p => Vec2.Distance(p, new Vec2(200.5, 200.5)) < 20).ToList();
+        Assert.All(ends, e => Assert.True(Vec2.Distance(e, ends[0]) < 1e-6)); // all arms end at the same point
+    }
+
+    [Fact]
+    public void Find_lines_here_traces_faint_detail_inside_the_area_and_leaves_the_rest_alone()
+    {
         var s = Preset("Sketch / drawing");
         s.Threshold = 40;
-
-        int PathsNearGlasses(VectorDrawing d, double scale) =>
-            d.Paths.Count(p => p.Flatten(1).Any(v => Math.Abs(v.X / scale - 400) < 130 && Math.Abs(v.Y / scale - 300) < 60));
-
-        using var plain = new TraceJob(new LoadedImage(image.Clone(), null), NoModels);
-        var before = plain.Run(s);
+        using var job = new TraceJob(new LoadedImage(FaintGlasses(), null), NoModels);
+        var before = job.Run(s);
         var scale = before.Width / 800.0;
-        Assert.Equal(0, PathsNearGlasses(before.Drawing, scale));
+        Assert.Equal(0, PathsNear(before.Drawing, scale, 400, 300, 130, 60));
+        var frame = PathsNear(before.Drawing, scale, 400, 100, 200, 10);
 
-        s.Picks = new() { new PickPoint(400 / 800.0, 300 / 600.0, PickKind.Add, 0.2) };
-        using var focused = new TraceJob(new LoadedImage(image, null), NoModels);
-        var after = focused.Run(s);
-        Assert.True(PathsNearGlasses(after.Drawing, scale) >= 2, $"found {PathsNearGlasses(after.Drawing, scale)} paths at the glasses");
+        s.Regions = new() { Circle(RegionKind.Find, 0.5, 0.5, 0.2, amount: 4) };
+        var after = job.Run(s);
+        Assert.True(PathsNear(after.Drawing, scale, 400, 300, 130, 60) >= 2, $"found {PathsNear(after.Drawing, scale, 400, 300, 130, 60)} paths at the glasses");
+        Assert.Equal(frame, PathsNear(after.Drawing, scale, 400, 100, 200, 10)); // outside the area nothing changed
+    }
+
+    [Fact]
+    public void Erase_lines_here_removes_lines_and_cuts_shapes()
+    {
+        // Line mode: the left half of the frame's top edge goes, the right half stays.
+        var s = Preset("Sketch / drawing");
+        using var job = new TraceJob(new LoadedImage(FaintGlasses(), null), NoModels);
+        var before = job.Run(s);
+        var scale = before.Width / 800.0;
+        Assert.True(PathsNear(before.Drawing, scale, 200, 100, 60, 10) > 0);
+        s.Regions = new() { Circle(RegionKind.Erase, 200 / 800.0, 100 / 600.0, 0.08) };
+        var after = job.Run(s);
+        Assert.Equal(0, PathsNear(after.Drawing, scale, 200, 100, 50, 10));
+        Assert.True(PathsNear(after.Drawing, scale, 600, 100, 60, 10) > 0);
+
+        // Shape mode: erasing inside the plate cuts a new round hole in it.
+        using var shapes = new TraceJob(Synthetic.Part(), NoModels);
+        var part = Preset("Part to copy");
+        var whole = shapes.Run(part);
+        part.Regions = new() { Circle(RegionKind.Erase, 420 / 1200.0, 470 / 900.0, 0.04) };
+        var cut = shapes.Run(part);
+        Assert.Equal(whole.Drawing.Paths.Count(p => p.Role == PathRole.Hole) + 1, cut.Drawing.Paths.Count(p => p.Role == PathRole.Hole));
+    }
+
+    [Fact]
+    public void A_deleted_line_stays_deleted_when_the_settings_change()
+    {
+        var s = Preset("Sketch / drawing");
+        using var job = new TraceJob(Synthetic.Sketch(), NoModels);
+        var before = job.Run(s);
+        var victim = before.Drawing.Paths.OrderByDescending(p => p.Flatten(1).Count).First();
+        var points = victim.Flatten(1);
+        s.Regions = new() { EditGeometry.SuppressAlong(points, before.Width, before.Height, 4) };
+
+        var after = job.Run(s);
+        Assert.Equal(before.Drawing.Paths.Count - 1, after.Drawing.Paths.Count);
+        s.Smoothness += 10;
+        s.Detail += 5;
+        var again = job.Run(s);
+        Assert.DoesNotContain(again.Drawing.Paths, p => EditGeometry.FractionInside(p.Flatten(1), v => points.Any(q => Vec2.Distance(q, v) < 3)) > 0.8);
+    }
+
+    [Fact]
+    public void Own_paths_are_added_exactly_as_drawn_and_exported()
+    {
+        var s = Preset("Part to copy");
+        using var job = new TraceJob(Synthetic.Part(), NoModels);
+        var plain = job.Run(s);
+        s.Manual = new()
+        {
+            new ManualPath { Nodes = { new(new NormPoint(0.1, 0.1)), new(new NormPoint(0.9, 0.1)) } },
+            new ManualPath
+            {
+                Closed = true,
+                Nodes =
+                {
+                    new(new NormPoint(0.2, 0.2), Out: new NormPoint(0.3, 0.15)),
+                    new(new NormPoint(0.4, 0.2), In: new NormPoint(0.35, 0.15)),
+                    new(new NormPoint(0.3, 0.4))
+                }
+            }
+        };
+        var result = job.Run(s);
+        Assert.Equal(plain.Drawing.Paths.Count + 2, result.Drawing.Paths.Count);
+        var mine = result.Drawing.Paths.Where(p => p.IsManual).OrderBy(p => p.ManualIndex).ToList();
+        Assert.Equal(new[] { 0, 1 }, mine.Select(p => p.ManualIndex));
+        var line = Assert.IsType<LineSegment>(Assert.Single(mine[0].Segments));
+        Assert.Equal(0.1 * result.Width, line.Start.X, 6);
+        Assert.Equal(0.9 * result.Width, line.End.X, 6);
+        Assert.IsType<CubicSegment>(mine[1].Segments[0]);
+        Assert.Equal(3, mine[1].Segments.Count);
+        Assert.True(mine[1].Closed);
+
+        // Adding a path is instant: no stage before "fit" runs again.
+        s.Manual.Add(new ManualPath { Nodes = { new(new NormPoint(0.5, 0.5)), new(new NormPoint(0.6, 0.6)) } });
+        var more = job.Run(s);
+        Assert.Equal(plain.Drawing.Paths.Count + 3, more.Drawing.Paths.Count);
+        Assert.True(more.StageMs.Where(kv => kv.Key != "fit").All(kv => kv.Value < 5), string.Join(", ", more.StageMs));
+
+        var dxf = Path.Combine(Path.GetTempPath(), "tracedrop-manual-" + Guid.NewGuid().ToString("N") + ".dxf");
+        try
+        {
+            Exporters.WriteFile(result.InUnits(), s.Units, ExportFormat.Dxf, dxf);
+            var doc = DxfDocument.Load(dxf);
+            Assert.NotNull(doc);
+        }
+        finally
+        {
+            File.Delete(dxf);
+        }
+    }
+
+    [Fact]
+    public void Taking_over_a_traced_path_keeps_its_shape()
+    {
+        var circle = new VectorPath { Circle = (new Vec2(100, 80), 30), Closed = true, Role = PathRole.Outer, Segments = new() };
+        var m = ManualPath.FromVectorPath(circle, 200, 160);
+        Assert.Equal(4, m.Nodes.Count);
+        Assert.True(m.Closed);
+        var back = m.ToVectorPath(200, 160, 0);
+        Assert.All(back.Flatten(0.5), v => Assert.InRange(Vec2.Distance(v, new Vec2(100, 80)), 29.8, 30.2));
+
+        var poly = new VectorPath
+        {
+            Closed = true, Role = PathRole.Outer,
+            Segments = new() { new LineSegment(new Vec2(10, 10), new Vec2(50, 10)), new LineSegment(new Vec2(50, 10), new Vec2(50, 40)), new LineSegment(new Vec2(50, 40), new Vec2(10, 10)) }
+        };
+        var p = ManualPath.FromVectorPath(poly, 200, 160);
+        Assert.Equal(3, p.Nodes.Count);
+        Assert.All(p.Nodes, n => Assert.True(n.In is null && n.Out is null));
+        Assert.All(p.ToVectorPath(200, 160, 0).Segments, seg => Assert.IsType<LineSegment>(seg));
     }
 }

@@ -17,9 +17,14 @@ public static class Cleanup
         return Math.Exp(coarse + (fine - coarse) * Math.Clamp(detail / 100.0, 0, 1));
     }
 
-    public static Detection Apply(Detection raw, TraceSettings s)
+    /// <param name="reference">
+    /// Picture size the feature-size rules are taken from (default: the detection's own size). A zoomed-in close-up
+    /// passes the full picture's size, so the same rules in pixels keep its (now larger) small features.
+    /// </param>
+    public static Detection Apply(Detection raw, TraceSettings s, Size? reference = null)
     {
-        return raw.IsStrokes ? CleanStrokes(raw.Strokes!, s) : CleanRegions(raw.Regions, s);
+        var size = reference ?? new Size(raw.Width, raw.Height);
+        return raw.IsStrokes ? CleanStrokes(raw.Strokes!, s, size) : CleanRegions(raw.Regions, s, size);
     }
 
     /// <summary>Pixel bounding box of everything detected, or null when nothing was.</summary>
@@ -50,14 +55,14 @@ public static class Cleanup
         return Detection.FromRegions(layers);
     }
 
-    static Detection CleanRegions(List<RegionLayer> layers, TraceSettings s)
+    static Detection CleanRegions(List<RegionLayer> layers, TraceSettings s, Size reference)
     {
         var cleaned = new List<RegionLayer>();
         foreach (var layer in layers)
         {
             var mask = layer.Mask.Clone();
             var scale = Math.Max(0.5, Detector.PixelScale(mask));
-            var minArea = MinFeatureArea(s.Detail, mask.Cols, mask.Rows);
+            var minArea = MinFeatureArea(s.Detail, reference.Width, reference.Height);
 
             if (s.CloseGaps > 0.5)
             {
@@ -66,7 +71,7 @@ public static class Cleanup
                 Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
             }
 
-            RemoveSmallComponents(mask, minArea, relaxed: FocusCircles(mask.Cols, mask.Rows, s.Picks)); // specks
+            RemoveSmallComponents(mask, minArea); // specks
             using (var inverted = new Mat())                 // pin-holes: same rule applied to the background
             {
                 Cv2.BitwiseNot(mask, inverted);
@@ -75,6 +80,8 @@ public static class Cleanup
             }
 
             if (s.FillHoles) FillHoles(mask);
+            // "Erase lines here" areas cut the shapes.
+            foreach (var erase in s.Regions.Where(r => r.Kind == Editing.RegionKind.Erase)) erase.Draw(mask, Scalar.All(0));
             ApplyPicks(mask, s.Picks);
             if (s.Keep == KeepShapes.Largest) KeepLargest(mask);
             cleaned.Add(new RegionLayer(layer.Name, mask, layer.Color));
@@ -82,7 +89,7 @@ public static class Cleanup
         return Detection.FromRegions(cleaned);
     }
 
-    static Detection CleanStrokes(Mat strokes, TraceSettings s)
+    static Detection CleanStrokes(Mat strokes, TraceSettings s, Size reference)
     {
         var mask = strokes.Clone();
         var scale = Math.Max(0.5, Detector.PixelScale(mask));
@@ -93,31 +100,23 @@ public static class Cleanup
             Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
         }
         // Strokes are thin, so their "area" threshold is smaller than for filled regions.
-        RemoveSmallComponents(mask, MinFeatureArea(s.Detail, mask.Cols, mask.Rows) * 0.35,
-            relaxed: FocusCircles(mask.Cols, mask.Rows, s.Picks));
+        RemoveSmallComponents(mask, MinFeatureArea(s.Detail, reference.Width, reference.Height) * 0.35);
+        // Pin-holes inside thick strokes (often where a line turns a corner) would thin into little loops that break
+        // the line into pieces; fill holes up to ~5x5 px of a 1600 px picture.
+        var referenceScale = Math.Max(0.5, Math.Max(reference.Width, reference.Height) / 1600.0);
+        using (var inverted = new Mat())
+        {
+            Cv2.BitwiseNot(mask, inverted);
+            RemoveSmallComponents(inverted, 25 * referenceScale * referenceScale, keepBorderTouching: true);
+            Cv2.BitwiseNot(inverted, mask);
+        }
         ApplyPicks(mask, s.Picks, radius: (int)Math.Round(12 * scale));
         if (s.Keep == KeepShapes.Largest) KeepLargest(mask);
         return Detection.FromStrokes(mask);
     }
 
-    /// <summary>
-    /// Focus circles (centre and radius in pixels) of a picture this size: inside them small detail is wanted,
-    /// so size rules are relaxed there.
-    /// </summary>
-    public static List<(Point2d Center, double Radius)> FocusCircles(int width, int height, IEnumerable<PickPoint> picks)
-    {
-        var longest = Math.Max(width, height);
-        return picks.Where(p => p.Kind == PickKind.Add)
-            .Select(p => (new Point2d(p.X * (width - 1), p.Y * (height - 1)), Math.Max(4, (p.Radius > 0 ? p.Radius : PickPoint.DefaultAddRadius) * longest)))
-            .ToList();
-    }
-
-    /// <summary>How much smaller features may be inside focus circles.</summary>
-    public const double FocusRelax = 0.2;
-
     /// <summary>Drops 8-connected components smaller than <paramref name="minArea"/>.</summary>
-    internal static void RemoveSmallComponents(Mat mask, double minArea, bool keepBorderTouching = false,
-        IReadOnlyList<(Point2d Center, double Radius)>? relaxed = null)
+    internal static void RemoveSmallComponents(Mat mask, double minArea, bool keepBorderTouching = false)
     {
         using var labels = new Mat();
         using var stats = new Mat();
@@ -130,12 +129,6 @@ public static class Cleanup
         {
             var area = stats.At<int>(i, (int)ConnectedComponentsTypes.Area);
             if (area >= minArea) continue;
-            if (relaxed is { Count: > 0 } && area >= minArea * FocusRelax)
-            {
-                var cx = centroids.At<double>(i, 0);
-                var cy = centroids.At<double>(i, 1);
-                if (relaxed.Any(f => Math.Pow(cx - f.Center.X, 2) + Math.Pow(cy - f.Center.Y, 2) <= f.Radius * f.Radius)) continue;
-            }
             if (keepBorderTouching)
             {
                 var x = stats.At<int>(i, (int)ConnectedComponentsTypes.Left);
@@ -193,7 +186,7 @@ public static class Cleanup
     /// </summary>
     internal static void ApplyPicks(Mat mask, IReadOnlyList<PickPoint> allPicks, int radius = 0)
     {
-        var picks = allPicks.Where(p => p.Kind != PickKind.Add).ToList();
+        var picks = allPicks.ToList();
         using var labels = new Mat();
         var count = Cv2.ConnectedComponents(mask, labels, PixelConnectivity.Connectivity8, MatType.CV_32S);
         if (count <= 1)

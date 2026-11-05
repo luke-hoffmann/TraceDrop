@@ -2,6 +2,7 @@ using System.Diagnostics;
 using OpenCvSharp;
 using Tracedrop.Core.Ai;
 using Tracedrop.Core.Detect;
+using Tracedrop.Core.Editing;
 using Tracedrop.Core.Imaging;
 using Tracedrop.Core.Vector;
 
@@ -57,7 +58,8 @@ public sealed class TraceJob : IDisposable
     string? _lineKey;
     Mat? _lineInk;
 
-    readonly Dictionary<string, FocusMap> _focus = new();
+    // Zoomed-in re-traces of "Find lines here" areas (stroke modes), by area and settings.
+    readonly Dictionary<string, List<RawPath>> _findTraces = new();
 
     string? _detectKey;
     Detection? _detected;
@@ -215,13 +217,15 @@ public sealed class TraceJob : IDisposable
             cancel.ThrowIfCancellationRequested();
 
             Lap("edge model");
-            // 5. Detect.
-            var detectKey = Key(prepareKey, needsEdges && _edges is not null, lineInk is not null,
-                string.Join(";", s.Picks.Where(p => p.Kind == PickKind.Add).Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Radius:0.####}")), s.Mode, s.Detail, s.Threshold, s.AutoThreshold, s.Colors, s.UseAiEdges, subject is not null, subjectFromAlpha);
+            var strokes = s.Mode is TraceMode.Edges or TraceMode.LineArt;
+            var finds = s.Regions.Where(r => r.Kind == RegionKind.Find).ToList();
+
+            // 5. Detect. In Outline and Shapes modes, "Find lines here" areas are re-detected zoomed in and pasted in.
+            var detectKey = Key(prepareKey, needsEdges && _edges is not null, lineInk is not null, s.Mode, s.Detail, s.Threshold, s.AutoThreshold,
+                s.Colors, s.UseAiEdges, subject is not null, subjectFromAlpha, strokes ? "" : string.Join("/", finds.Select(r => r.Key())));
             if (_detectKey != detectKey || _detected is null)
             {
                 DisposeFrom(Stage.Detected);
-                var focus = s.Mode is TraceMode.Edges or TraceMode.LineArt ? FocusMaps(prepareKey, s) : new List<FocusMap>();
                 var signals = new Signals
                 {
                     Prepared = _prepared,
@@ -229,18 +233,19 @@ public sealed class TraceJob : IDisposable
                     SubjectFromAlpha = subjectFromAlpha,
                     EdgeFused = needsEdges ? _edges?.Fused : null,
                     EdgeAverage = needsEdges ? _edges?.Average : null,
-                    LineInk = lineInk,
-                    Focus = focus
+                    LineInk = lineInk
                 };
                 _detected = Detector.Detect(signals, s);
+                if (!strokes) foreach (var find in finds) FindShapes(_detected, find, signals, s);
                 _detectKey = detectKey;
             }
             Lap("detect");
             cancel.ThrowIfCancellationRequested();
 
-            // 6. Clean up, then size: OutputSize is the traced shape's longest side before any offset.
+            // 6. Clean up (Erase areas cut shapes here), then size: OutputSize is the traced shape's longest side before any offset.
             var cleanKey = Key(detectKey, s.CloseGaps, s.FillHoles, s.Keep,
-                string.Join(";", s.Picks.Where(p => p.Kind != PickKind.Add).Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Kind}")),
+                string.Join(";", s.Picks.Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Kind}")),
+                strokes ? "" : string.Join("/", s.Regions.Where(r => r.Kind == RegionKind.Erase).Select(r => r.Key())),
                 s.Offset, s.OutputSize);
             if (_cleanKey != cleanKey || _cleaned is null)
             {
@@ -255,11 +260,15 @@ public sealed class TraceJob : IDisposable
             Lap("clean");
             cancel.ThrowIfCancellationRequested();
 
-            // 7. Trace outlines / centerlines (cached: fitting sliders don't re-trace).
-            var traceKey = Key(cleanKey, s.Strokes, s.StrokeWidth, s.Detail, string.Join(";", s.Picks.Where(p => p.Kind == PickKind.Add).Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Radius:0.####}")));
+            // 7. Trace outlines / centerlines, then apply the areas: zoomed re-traces replace what's inside Find
+            //    areas (line modes), Erase areas remove lines (line modes), deleted lines stay deleted (all modes).
+            var traceKey = Key(cleanKey, s.Strokes, s.StrokeWidth, s.Detail,
+                string.Join("/", s.Regions.Where(r => strokes || r.Kind == RegionKind.Suppress).Select(r => r.Key())));
             if (_traceKey != traceKey || _raw is null)
             {
-                _raw = Vectorizer.Extract(_cleaned, s, cancel);
+                var raw = Vectorizer.Extract(_cleaned, s, cancel);
+                if (strokes && finds.Count > 0) raw = MergeFindTraces(raw, finds, s, prepareKey, needsEdges, lineInk is not null, cancel);
+                _raw = ApplyEraseAndSuppress(raw, s, strokes);
                 _traceKey = traceKey;
                 _drawing = null;
             }
@@ -274,9 +283,18 @@ public sealed class TraceJob : IDisposable
             }
             Lap("fit");
 
+            // 9. The user's own paths go on top, exactly as drawn.
+            var drawing = _drawing;
+            if (s.Manual.Count > 0)
+            {
+                var all = _drawing.Paths.ToList();
+                for (var i = 0; i < s.Manual.Count; i++) all.Add(s.Manual[i].ToVectorPath(_working.Cols, _working.Rows, i));
+                drawing = new VectorDrawing(_drawing.Width, _drawing.Height, all);
+            }
+
             return new TraceResult
             {
-                Drawing = _drawing,
+                Drawing = drawing,
                 Width = _working.Cols,
                 Height = _working.Rows,
                 Settings = s,
@@ -292,28 +310,194 @@ public sealed class TraceJob : IDisposable
         }
     }
 
-    /// <summary>Close-up passes for the Focus areas, cached per prepared picture and circle.</summary>
-    List<FocusMap> FocusMaps(string prepareKey, TraceSettings s)
+    /// <summary>
+    /// Outline / Shapes modes: re-detects a "Find lines here" area zoomed in (with its own Amount) and replaces the
+    /// shapes inside the area with that close-up.
+    /// </summary>
+    void FindShapes(Detection main, GuideRegion find, Signals signals, TraceSettings s)
     {
-        var maps = new List<FocusMap>();
-        var wanted = new HashSet<string>();
-        foreach (var p in s.Picks.Where(p => p.Kind == PickKind.Add))
+        var size = _prepared!.Size();
+        var roi = Inflate(find.Bounds(size), size);
+        if (roi.Width < 4 || roi.Height < 4) return;
+        var scale = Math.Clamp(1200.0 / Math.Max(roi.Width, roi.Height), 1, 3);
+        var upSize = new OpenCvSharp.Size(Math.Max(8, (int)Math.Round(roi.Width * scale)), Math.Max(8, (int)Math.Round(roi.Height * scale)));
+
+        using var cropView = new Mat(_prepared, roi);
+        using var crop = new Mat();
+        Cv2.Resize(cropView, crop, upSize, 0, 0, InterpolationFlags.Cubic);
+        StretchForFind(crop, find.Amount);
+        Mat? subjectCrop = null;
+        if (signals.Subject is not null)
         {
-            var key = Key(prepareKey, s.Mode, s.UseAiLineArt, Math.Round(s.Detail / 10), p.X.ToString("0.####"), p.Y.ToString("0.####"), p.Radius.ToString("0.####"));
-            wanted.Add(key);
-            if (!_focus.TryGetValue(key, out var map))
+            using var view = new Mat(signals.Subject, roi);
+            subjectCrop = new Mat();
+            Cv2.Resize(view, subjectCrop, upSize, 0, 0, InterpolationFlags.Linear);
+        }
+        try
+        {
+            var local = s.WithoutEdits();
+            local.Threshold = s.Mode == TraceMode.Silhouette
+                ? Math.Clamp(s.Threshold - 8 * find.Amount, 2, 98)   // more = less confidence needed
+                : Math.Clamp(s.Threshold + 6 * find.Amount, 0, 100); // more = include lighter
+            using var close = Detector.Detect(new Signals { Prepared = crop, Subject = subjectCrop, SubjectFromAlpha = signals.SubjectFromAlpha }, local);
+            using var area = find.Mask(size);
+            using var areaRoi = new Mat(area, roi);
+            foreach (var layer in main.Regions)
             {
-                map = Focus.Compute(_prepared!, p, _models, s);
-                _focus[key] = map;
+                var source = close.Regions.Count == main.Regions.Count
+                    ? close.Regions[main.Regions.IndexOf(layer)]
+                    : close.Regions.OrderBy(r => Math.Pow(r.Color.Val0 - layer.Color.Val0, 2) + Math.Pow(r.Color.Val1 - layer.Color.Val1, 2) + Math.Pow(r.Color.Val2 - layer.Color.Val2, 2)).FirstOrDefault();
+                if (source is null) continue;
+                using var down = new Mat();
+                Cv2.Resize(source.Mask, down, roi.Size, 0, 0, InterpolationFlags.Area);
+                Cv2.Threshold(down, down, 127, 255, ThresholdTypes.Binary);
+                using var target = new Mat(layer.Mask, roi);
+                down.CopyTo(target, areaRoi);
             }
-            maps.Add(map);
         }
-        foreach (var stale in _focus.Keys.Where(k => !wanted.Contains(k)).ToList())
+        finally
         {
-            _focus[stale].Dispose();
-            _focus.Remove(stale);
+            subjectCrop?.Dispose();
         }
-        return maps;
+    }
+
+    /// <summary>
+    /// Line modes: traces each "Find lines here" area again zoomed in (2-4x, same settings plus its Amount) so small
+    /// features become large enough to keep, then uses those lines inside the area and the normal ones outside.
+    /// </summary>
+    List<RawPath> MergeFindTraces(List<RawPath> main, List<GuideRegion> finds, TraceSettings s, string prepareKey, bool useEdges, bool useLineModel,
+        CancellationToken cancel)
+    {
+        var size = _prepared!.Size();
+        using var union = new Mat(size, MatType.CV_8U, Scalar.All(0));
+        foreach (var f in finds) f.Draw(union, Scalar.All(255));
+        bool Inside(Vec2 p) => At(union, p);
+
+        var merged = new List<RawPath>();
+        foreach (var path in main)
+            foreach (var (pts, closed) in EditGeometry.Split(path.Points, path.Closed, Inside, keepInside: false))
+                merged.Add(path with { Points = pts, Closed = closed });
+
+        var wanted = new HashSet<string>();
+        foreach (var find in finds)
+        {
+            cancel.ThrowIfCancellationRequested();
+            var key = Key(prepareKey, s.Mode, s.Detail, s.Threshold, s.UseAiEdges, s.UseAiLineArt, useEdges, useLineModel, s.Strokes, s.StrokeWidth, s.CloseGaps, find.Key());
+            wanted.Add(key);
+            if (!_findTraces.TryGetValue(key, out var close))
+            {
+                close = TraceCloseUp(find, s, useEdges, useLineModel, cancel);
+                _findTraces[key] = close;
+            }
+            using var area = find.Mask(size);
+            foreach (var path in close)
+                foreach (var (pts, closed) in EditGeometry.Split(path.Points, path.Closed, p => At(area, p), keepInside: true))
+                    merged.Add(path with { Points = pts, Closed = closed });
+        }
+        foreach (var stale in _findTraces.Keys.Where(k => !wanted.Contains(k)).ToList()) _findTraces.Remove(stale);
+        return merged;
+    }
+
+    List<RawPath> TraceCloseUp(GuideRegion find, TraceSettings s, bool useEdges, bool useLineModel, CancellationToken cancel)
+    {
+        var size = _prepared!.Size();
+        var roi = Inflate(find.Bounds(size), size);
+        if (roi.Width < 4 || roi.Height < 4) return new List<RawPath>();
+        var scale = Math.Clamp(1400.0 / Math.Max(roi.Width, roi.Height), 1, 4);
+        var upSize = new OpenCvSharp.Size(Math.Max(8, (int)Math.Round(roi.Width * scale)), Math.Max(8, (int)Math.Round(roi.Height * scale)));
+        using var cropView = new Mat(_prepared, roi);
+        using var crop = new Mat();
+        Cv2.Resize(cropView, crop, upSize, 0, 0, InterpolationFlags.Cubic);
+        StretchForFind(crop, find.Amount);
+
+        var local = s.WithoutEdits();
+        local.Threshold = Math.Clamp(s.Threshold + 8 * find.Amount, 0, 100);
+        local.Detail = Math.Clamp(s.Detail + 5 * find.Amount, 0, 100);
+
+        var edges = useEdges ? AiModels.Edges(_models, crop) : null;
+        using var lineInk = useLineModel ? AiModels.LineArt(_models, crop) : null;
+        try
+        {
+            cancel.ThrowIfCancellationRequested();
+            using var detected = Detector.Detect(new Signals
+            {
+                Prepared = crop, EdgeFused = edges?.Fused, EdgeAverage = edges?.Average, LineInk = lineInk,
+                Scale = Detector.PixelScale(_prepared) * scale
+            }, local);
+            // The full picture's feature-size rules, applied to the enlarged crop: small things here now pass them.
+            using var cleaned = Cleanup.Apply(detected, local, reference: size);
+            var raw = Vectorizer.Extract(cleaned, local, cancel, reference: size);
+            return raw.Select(r => r with { Points = r.Points.Select(p => new Vec2(p.X / scale + roi.X, p.Y / scale + roi.Y)).ToList() }).ToList();
+        }
+        finally
+        {
+            if (edges is { } e) { e.Fused.Dispose(); e.Average.Dispose(); }
+        }
+    }
+
+    /// <summary>
+    /// "More lines here": spreads the close-up's own range of tones so faint lines stand out to the detectors. Each
+    /// step of Amount allows twice the contrast gain (+1 = 2x .. +6 = 64x). Only the detectors see this; the picture
+    /// shown and the rest of the trace are untouched.
+    /// </summary>
+    static void StretchForFind(Mat bgr, int amount)
+    {
+        if (amount <= 0) return;
+        using var gray = new Mat();
+        Cv2.CvtColor(bgr, gray, ColorConversionCodes.BGR2GRAY);
+        using var small = new Mat();
+        Cv2.Resize(gray, small, new OpenCvSharp.Size(Math.Max(1, gray.Cols / 2), Math.Max(1, gray.Rows / 2)), 0, 0, InterpolationFlags.Area);
+        small.ConvertTo(small, MatType.CV_32F);
+        var lo = Ai.AiModels.Percentile(small, 0.01);
+        var hi = Ai.AiModels.Percentile(small, 0.99);
+        var gain = Math.Clamp(220.0 / Math.Max(1, hi - lo), 1, Math.Pow(2, amount));
+        if (gain <= 1.01) return;
+        var mid = (lo + hi) / 2;
+        bgr.ConvertTo(bgr, -1, gain, 127.5 - mid * gain);
+    }
+
+    /// <summary>Erase areas remove lines (line modes); deleted lines (Suppress) are dropped whole in every mode.</summary>
+    List<RawPath> ApplyEraseAndSuppress(List<RawPath> raw, TraceSettings s, bool strokes)
+    {
+        var size = _prepared!.Size();
+        var erases = strokes ? s.Regions.Where(r => r.Kind == RegionKind.Erase).ToList() : new List<GuideRegion>();
+        var suppress = s.Regions.Where(r => r.Kind == RegionKind.Suppress).ToList();
+        if (erases.Count == 0 && suppress.Count == 0) return raw;
+
+        using var eraseMask = new Mat(size, MatType.CV_8U, Scalar.All(0));
+        foreach (var r in erases) r.Draw(eraseMask, Scalar.All(255));
+        using var suppressMask = new Mat(size, MatType.CV_8U, Scalar.All(0));
+        foreach (var r in suppress) r.Draw(suppressMask, Scalar.All(255));
+        var minLength = Math.Max(4, Math.Sqrt(Cleanup.MinFeatureArea(s.Detail, size.Width, size.Height)));
+
+        var result = new List<RawPath>();
+        foreach (var path in raw)
+        {
+            // A deleted line: drop the whole path when most of it lies along what was deleted.
+            if (suppress.Count > 0 && EditGeometry.FractionInside(path.Points, p => At(suppressMask, p)) >= 0.6) continue;
+            if (erases.Count == 0) { result.Add(path); continue; }
+            foreach (var (pts, closed) in EditGeometry.Split(path.Points, path.Closed, p => At(eraseMask, p), keepInside: false))
+                if (closed || Geometry2D.PolylineLength(pts, false) >= minLength) result.Add(path with { Points = pts, Closed = closed });
+        }
+        return result;
+    }
+
+    static bool At(Mat mask, Vec2 p)
+    {
+        var x = (int)p.X;
+        var y = (int)p.Y;
+        return x >= 0 && y >= 0 && x < mask.Cols && y < mask.Rows && mask.At<byte>(y, x) != 0;
+    }
+
+    static Rect Inflate(Rect r, OpenCvSharp.Size size)
+    {
+        if (r.Width <= 0 || r.Height <= 0) return r;
+        var m = Math.Max(8, (int)(Math.Max(r.Width, r.Height) * 0.08));
+        var x0 = Math.Max(0, r.X - m);
+        var y0 = Math.Max(0, r.Y - m);
+        var x1 = Math.Min(size.Width, r.Right + m);
+        var y1 = Math.Min(size.Height, r.Bottom + m);
+        return new Rect(x0, y0, x1 - x0, y1 - y0);
     }
 
     static string Key(params object[] parts) =>
@@ -334,8 +518,7 @@ public sealed class TraceJob : IDisposable
             _prepared?.Dispose(); _prepared = null; _prepareKey = null;
             DisposeEdges();
             _lineInk?.Dispose(); _lineInk = null; _lineKey = null;
-            foreach (var map in _focus.Values) map.Dispose();
-            _focus.Clear();
+            _findTraces.Clear();
         }
         if (stage <= Stage.Detected)
         {

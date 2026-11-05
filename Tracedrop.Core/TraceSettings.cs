@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Tracedrop.Core.Editing;
 
 namespace Tracedrop.Core;
 
@@ -146,10 +147,30 @@ public sealed class TraceSettings
     /// <summary>Clicks on the picture (0..1 image coordinates): keep only, remove, or add an area.</summary>
     public List<PickPoint> Picks { get; set; } = new();
 
+    /// <summary>Areas the user marked: find lines here, erase here, and deleted lines (per picture).</summary>
+    public List<GuideRegion> Regions { get; set; } = new();
+
+    /// <summary>Paths the user drew or took over from the AI (per picture), in picture-relative coordinates.</summary>
+    public List<ManualPath> Manual { get; set; } = new();
+
+    public bool HasEdits => Picks.Count > 0 || Regions.Count > 0 || Manual.Count > 0;
+
     public TraceSettings Clone()
     {
         var copy = (TraceSettings)MemberwiseClone();
         copy.Picks = Picks.Select(p => p with { }).ToList();
+        copy.Regions = Regions.Select(r => r.Copy()).ToList();
+        copy.Manual = Manual.Select(m => m.Copy()).ToList();
+        return copy;
+    }
+
+    /// <summary>A copy without the per-picture edits (picks, areas, own paths): what presets and new pictures get.</summary>
+    public TraceSettings WithoutEdits()
+    {
+        var copy = Clone();
+        copy.Picks = new();
+        copy.Regions = new();
+        copy.Manual = new();
         return copy;
     }
 
@@ -179,6 +200,10 @@ public sealed class TraceSettings
         WorkingSize = Math.Clamp(WorkingSize, 256, 6000);
         Picks ??= new();
         Picks.RemoveAll(p => p is null || !Enum.IsDefined(p.Kind) || double.IsNaN(p.X) || double.IsNaN(p.Y));
+        Regions ??= new();
+        Regions.RemoveAll(r => r is null || r.Points is null || r.Points.Count == 0 || !Enum.IsDefined(r.Kind) || !Enum.IsDefined(r.Shape));
+        Manual ??= new();
+        Manual.RemoveAll(m => m is null || m.Nodes is null || m.Nodes.Count < 2);
         if (!Enum.IsDefined(Mode)) Mode = TraceMode.Silhouette;
         if (!Enum.IsDefined(Curves)) Curves = CurveStyle.LinesAndArcs;
         if (!Enum.IsDefined(Strokes)) Strokes = StrokeStyle.Centerline;
@@ -189,25 +214,17 @@ public sealed class TraceSettings
 
 }
 
-/// <summary>What a click on the preview does.</summary>
+/// <summary>What a pick does.</summary>
 public enum PickKind
 {
-    /// <summary>Keep only the shapes that have a Keep click (everything else is dropped).</summary>
+    /// <summary>Keep only the shapes that have a Keep pick (everything else is dropped).</summary>
     Keep,
-    /// <summary>Remove the shape under the click, or fill the hole under it.</summary>
-    Remove,
-    /// <summary>"This is a region too": look harder in a circle around the click and add what's there.</summary>
-    Add
+    /// <summary>Remove the shape under the point, or fill the hole under it.</summary>
+    Remove
 }
 
-/// <summary>
-/// A click on the preview. X/Y are 0..1 of the picture; Radius (Add only) is a fraction of the picture's longest side.
-/// </summary>
-public sealed record PickPoint(double X, double Y, PickKind Kind, double Radius = 0)
-{
-    /// <summary>Default size of an Add circle: 6% of the picture's longest side.</summary>
-    public const double DefaultAddRadius = 0.06;
-}
+/// <summary>A point pick on the picture (X/Y in 0..1). Radius is unused and kept for older saved settings.</summary>
+public sealed record PickPoint(double X, double Y, PickKind Kind, double Radius = 0);
 
 internal static class Json
 {
