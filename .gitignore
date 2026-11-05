@@ -1,0 +1,12 @@
+bin/
+obj/
+dist/
+publish/
+*.user
+.vs/
+.vscode/
+TestResults/
+# Large models are downloaded at build time (tools/models/fetch_models.py); only the small TEED model is committed.
+models/*
+!models/teed.onnx
+!models/README.md

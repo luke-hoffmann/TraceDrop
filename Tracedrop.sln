@@ -1,0 +1,51 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tracedrop.Core", "Tracedrop.Core\Tracedrop.Core.csproj", "{5065C87B-66F2-4D57-AFC1-8FD58B48F42D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tracedrop.Models", "Tracedrop.Models\Tracedrop.Models.csproj", "{ABE84FDE-0887-439A-A257-E6323D8EB991}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TracedropApp", "TracedropApp\TracedropApp.csproj", "{EAA7C0C5-95CA-44CF-A42F-150BFC87DFE6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tracedrop.Core.Tests", "Tracedrop.Core.Tests\Tracedrop.Core.Tests.csproj", "{C409FAF6-012D-4289-B5E1-A0A156252A25}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{D2485977-B9AE-4702-80C4-6A8CFA6E8803}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TraceCli", "tools\TraceCli\TraceCli.csproj", "{FA64F02C-0BCE-404C-8244-08070DFB3AC5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5065C87B-66F2-4D57-AFC1-8FD58B48F42D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5065C87B-66F2-4D57-AFC1-8FD58B48F42D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5065C87B-66F2-4D57-AFC1-8FD58B48F42D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5065C87B-66F2-4D57-AFC1-8FD58B48F42D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ABE84FDE-0887-439A-A257-E6323D8EB991}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ABE84FDE-0887-439A-A257-E6323D8EB991}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ABE84FDE-0887-439A-A257-E6323D8EB991}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ABE84FDE-0887-439A-A257-E6323D8EB991}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EAA7C0C5-95CA-44CF-A42F-150BFC87DFE6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EAA7C0C5-95CA-44CF-A42F-150BFC87DFE6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EAA7C0C5-95CA-44CF-A42F-150BFC87DFE6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EAA7C0C5-95CA-44CF-A42F-150BFC87DFE6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C409FAF6-012D-4289-B5E1-A0A156252A25}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C409FAF6-012D-4289-B5E1-A0A156252A25}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C409FAF6-012D-4289-B5E1-A0A156252A25}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C409FAF6-012D-4289-B5E1-A0A156252A25}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FA64F02C-0BCE-404C-8244-08070DFB3AC5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FA64F02C-0BCE-404C-8244-08070DFB3AC5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FA64F02C-0BCE-404C-8244-08070DFB3AC5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FA64F02C-0BCE-404C-8244-08070DFB3AC5}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FA64F02C-0BCE-404C-8244-08070DFB3AC5} = {D2485977-B9AE-4702-80C4-6A8CFA6E8803}
+	EndGlobalSection
+EndGlobal

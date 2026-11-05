@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Tracedrop.Core</RootNamespace>
+    <AssemblyName>Tracedrop.Core</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CS9057</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Image processing (Apache-2.0). Native runtime packages are chosen by the app / test projects. -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+    <!-- AI inference (MIT). The app adds the DirectML native package, tests add the CPU one. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
+    <!-- Decodes HEIC/HEIF, AVIF, GIF, PSD and other formats OpenCV can't read (Apache-2.0). -->
+    <PackageReference Include="Magick.NET-Q8-x64" Version="14.17.2" />
+    <!-- DXF writer (MIT). -->
+    <PackageReference Include="netDxf" Version="2023.11.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Tracedrop.Core.Tests" />
+  </ItemGroup>
+
+</Project>

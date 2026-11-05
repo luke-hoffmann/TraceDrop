@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Tracedrop</AssemblyName>
+    <RootNamespace>TracedropApp</RootNamespace>
+    <ApplicationIcon>Tracedrop.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>1.0.0</Version>
+    <Product>Tracedrop</Product>
+    <Description>Pictures to clean vector outlines (DXF, SVG, PDF), on this PC.</Description>
+    <Copyright>MIT License</Copyright>
+    <NoWarn>$(NoWarn);CS9057</NoWarn>
+    <!-- Lets the Windows build be cross-compiled from Linux/macOS too. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!-- Single portable exe: self-contained .NET runtime, no separate install on the target machine. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <!--
+    The full Windows SDK ships the WinForms targets; source-built Linux SDKs don't. Use them when present,
+    otherwise reference the WinForms framework directly (same result for this app).
+  -->
+  <PropertyGroup Condition="Exists('$(MSBuildSDKsPath)/Microsoft.NET.Sdk.WindowsDesktop/targets/Microsoft.NET.Sdk.WindowsDesktop.targets')">
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseWindowsForms)' != 'true'">
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+    <Using Include="System.Drawing" />
+    <Using Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tracedrop.Core\Tracedrop.Core.csproj" />
+    <ProjectReference Include="..\Tracedrop.Models\Tracedrop.Models.csproj" />
+    <!-- Native OpenCV for Windows x64 (Apache-2.0). -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+    <!-- ONNX Runtime with DirectML: AI on any DirectX 12 GPU (NVIDIA, AMD, Intel), CPU otherwise (MIT). -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
+  </ItemGroup>
+
+  <!-- OpenCV's video-file DLL (FFmpeg) is large and never used: keep it out of the exe. -->
+  <Target Name="DropUnusedOpenCvFfmpegFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <_UnusedOpenCvFfmpegPublish Include="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(Filename)').StartsWith('opencv_videoio_ffmpeg'))" />
+      <ResolvedFileToPublish Remove="@(_UnusedOpenCvFfmpegPublish)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Only the exe goes next to the exe: no debug symbols or import libraries from native packages. -->
+  <Target Name="DropSymbolsFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb' Or '%(Extension)' == '.lib'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="DropUnusedOpenCvFfmpegFromOutput" BeforeTargets="_CopyFilesMarkedCopyLocal">
+    <ItemGroup>
+      <_UnusedOpenCvFfmpegCopy Include="@(ReferenceCopyLocalPaths)" Condition="$([System.String]::Copy('%(Filename)').StartsWith('opencv_videoio_ffmpeg'))" />
+      <ReferenceCopyLocalPaths Remove="@(_UnusedOpenCvFfmpegCopy)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

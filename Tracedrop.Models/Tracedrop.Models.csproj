@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Resource-only assembly that carries the ONNX models inside the exe. Models are not committed to git:
+    run tools/models/fetch_models.py (or let CI do it) to fill ../models, then build. Any model file
+    missing at build time is simply left out and the app falls back to its classic methods for that step.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Tracedrop.Models</RootNamespace>
+    <AssemblyName>Tracedrop.Models</AssemblyName>
+    <ModelsDir Condition="'$(ModelsDir)' == ''">$(MSBuildThisFileDirectory)..\models\</ModelsDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(ModelsDir)teed.onnx" LogicalName="Tracedrop.Models.teed.onnx" Condition="Exists('$(ModelsDir)teed.onnx')" />
+    <EmbeddedResource Include="$(ModelsDir)birefnet-lite.onnx" LogicalName="Tracedrop.Models.birefnet-lite.onnx" Condition="Exists('$(ModelsDir)birefnet-lite.onnx')" />
+    <EmbeddedResource Include="$(ModelsDir)informative-drawings.onnx" LogicalName="Tracedrop.Models.informative-drawings.onnx" Condition="Exists('$(ModelsDir)informative-drawings.onnx')" />
+  </ItemGroup>
+
+</Project>

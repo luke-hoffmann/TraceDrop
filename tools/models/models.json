@@ -1,0 +1,35 @@
+{
+  "comment": "AI models bundled into Tracedrop.exe. All are MIT licensed. teed.onnx is committed (255 KB); the large ones are downloaded at build time by fetch_models.py or build.ps1. Pin sha256 once verified; an empty sha256 accepts any file that passes the smoke test and prints its hash.",
+  "models": [
+    {
+      "file": "teed.onnx",
+      "purpose": "Edge detection (Edges mode, Line art fallback)",
+      "license": "MIT",
+      "source": "https://github.com/xavysp/TEED (BIPED checkpoint 5/5_model.pth, exported by tools/models/export_teed.py)",
+      "committed": true,
+      "sha256": "712efd4cc4228fc5acfe94b750305df607c53c46487cc86489080e2727865c3b"
+    },
+    {
+      "file": "birefnet-lite.onnx",
+      "purpose": "Subject / background segmentation (Outline mode, Isolate subject)",
+      "license": "MIT",
+      "source": "https://github.com/ZhengPeng7/BiRefNet (BiRefNet_lite), ONNX by onnx-community",
+      "urls": [
+        "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model.onnx"
+      ],
+      "smoke": { "input": [1, 3, 1024, 1024] },
+      "sha256": ""
+    },
+    {
+      "file": "informative-drawings.onnx",
+      "purpose": "Photo to line drawing (Line art mode)",
+      "license": "MIT",
+      "source": "https://github.com/carolineec/informative-drawings (anime_style generator), ONNX by rocca",
+      "urls": [
+        "https://huggingface.co/rocca/informative-drawings-line-art-onnx/resolve/main/model.onnx"
+      ],
+      "smoke": { "input": [1, 3, 512, 512] },
+      "sha256": ""
+    }
+  ]
+}
