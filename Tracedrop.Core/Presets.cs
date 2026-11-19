@@ -7,6 +7,22 @@ public static class Presets
 {
     public static IReadOnlyList<Preset> BuiltIn { get; } = new[]
     {
+        new Preset("Gridfinity bin", "Tools on a sheet of Letter or A4 paper, photographed from above: a Gridfinity bin with a pocket for each tool.",
+            new TraceSettings
+            {
+                Mode = TraceMode.Silhouette, UsePaper = true, FillHoles = true, Detail = 45, Threshold = 50, Smoothness = 60,
+                CornerSharpness = 45, Curves = CurveStyle.LinesAndArcs, SnapCircles = true, Despeckle = 1, WorkingSize = 2400,
+                Bin = new() { Clearance = 1.0, Depth = 15, StackingLip = true, FingerHoles = true }
+            }, true),
+
+        new Preset("Gridfinity, snug", "Like Gridfinity bin with a tight 0.5 mm fit, deeper pockets and magnet holes.",
+            new TraceSettings
+            {
+                Mode = TraceMode.Silhouette, UsePaper = true, FillHoles = true, Detail = 55, Threshold = 50, Smoothness = 50,
+                CornerSharpness = 55, Curves = CurveStyle.LinesAndArcs, SnapCircles = true, Despeckle = 1, WorkingSize = 3600,
+                Bin = new() { Clearance = 0.5, Depth = 20, StackingLip = true, Magnets = true, FingerHoles = true }
+            }, true),
+
         new Preset("Object / tool", "Outer outline and holes of an object on a plain surface. Foam inserts, shadow boards, templates.",
             new TraceSettings
             {

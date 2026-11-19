@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Tracedrop.Core.Editing;
+using Tracedrop.Core.Gridfinity;
+using Tracedrop.Core.Paper;
 
 namespace Tracedrop.Core;
 
@@ -144,6 +146,24 @@ public sealed class TraceSettings
     /// <summary>Longest side, in pixels, the picture is traced at. Higher = more precise and slower.</summary>
     public int WorkingSize { get; set; } = 1600;
 
+    // ---------- Paper (scale reference) ----------
+
+    /// <summary>Find the sheet of paper under the tools, look straight down on it and use it for true size (mm).</summary>
+    public bool UsePaper { get; set; }
+
+    public PaperSize Paper { get; set; } = PaperSize.Auto;
+
+    /// <summary>Per picture: the sheet's corners set by hand (0..1 of the photo; TL, TR, BR, BL). Empty = found automatically.</summary>
+    public List<NormPoint> PaperCorners { get; set; } = new();
+
+    // ---------- Gridfinity ----------
+
+    /// <summary>How bins are made from the traced tools.</summary>
+    public BinSettings Bin { get; set; } = new();
+
+    /// <summary>Per picture: where each tool sits in the bin, its finger holes and depth, and text labels.</summary>
+    public BinLayout Layout { get; set; } = new();
+
     /// <summary>Clicks on the picture (0..1 image coordinates): keep only, remove, or add an area.</summary>
     public List<PickPoint> Picks { get; set; } = new();
 
@@ -153,7 +173,7 @@ public sealed class TraceSettings
     /// <summary>Paths the user drew or took over from the AI (per picture), in picture-relative coordinates.</summary>
     public List<ManualPath> Manual { get; set; } = new();
 
-    public bool HasEdits => Picks.Count > 0 || Regions.Count > 0 || Manual.Count > 0;
+    public bool HasEdits => Picks.Count > 0 || Regions.Count > 0 || Manual.Count > 0 || PaperCorners.Count > 0 || !Layout.IsEmpty;
 
     public TraceSettings Clone()
     {
@@ -161,6 +181,9 @@ public sealed class TraceSettings
         copy.Picks = Picks.Select(p => p with { }).ToList();
         copy.Regions = Regions.Select(r => r.Copy()).ToList();
         copy.Manual = Manual.Select(m => m.Copy()).ToList();
+        copy.PaperCorners = PaperCorners.ToList();
+        copy.Bin = Bin.Clone();
+        copy.Layout = Layout.Clone();
         return copy;
     }
 
@@ -171,6 +194,8 @@ public sealed class TraceSettings
         copy.Picks = new();
         copy.Regions = new();
         copy.Manual = new();
+        copy.PaperCorners = new();
+        copy.Layout = new();
         return copy;
     }
 
@@ -204,6 +229,11 @@ public sealed class TraceSettings
         Regions.RemoveAll(r => r is null || r.Points is null || r.Points.Count == 0 || !Enum.IsDefined(r.Kind) || !Enum.IsDefined(r.Shape));
         Manual ??= new();
         Manual.RemoveAll(m => m is null || m.Nodes is null || m.Nodes.Count < 2);
+        PaperCorners ??= new();
+        if (PaperCorners.Count != 4 || PaperCorners.Any(p => p is null || double.IsNaN(p.X) || double.IsNaN(p.Y))) PaperCorners = new();
+        if (!Enum.IsDefined(Paper)) Paper = PaperSize.Auto;
+        Bin = (Bin ?? new BinSettings()).Normalized();
+        Layout = (Layout ?? new BinLayout()).Normalized();
         if (!Enum.IsDefined(Mode)) Mode = TraceMode.Silhouette;
         if (!Enum.IsDefined(Curves)) Curves = CurveStyle.LinesAndArcs;
         if (!Enum.IsDefined(Strokes)) Strokes = StrokeStyle.Centerline;

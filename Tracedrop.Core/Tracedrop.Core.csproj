@@ -20,6 +20,10 @@
     <PackageReference Include="Magick.NET-Q8-x64" Version="14.17.2" />
     <!-- DXF writer (MIT). -->
     <PackageReference Include="netDxf" Version="2023.11.10" />
+    <!-- 2D polygon booleans and offsets for the Gridfinity bins (Boost Software License 1.0). -->
+    <PackageReference Include="Clipper2" Version="1.5.4" />
+    <!-- Polygon triangulation for the bins' flat faces (MIT). -->
+    <PackageReference Include="LibTessDotNet" Version="1.1.15" />
   </ItemGroup>
 
   <ItemGroup>

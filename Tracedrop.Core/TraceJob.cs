@@ -4,6 +4,7 @@ using Tracedrop.Core.Ai;
 using Tracedrop.Core.Detect;
 using Tracedrop.Core.Editing;
 using Tracedrop.Core.Imaging;
+using Tracedrop.Core.Paper;
 using Tracedrop.Core.Vector;
 
 namespace Tracedrop.Core;
@@ -26,6 +27,21 @@ public sealed class TraceResult
     public required double UnitsPerPixel { get; init; }
 
     public VectorDrawing InUnits() => Drawing.ToOutputUnits(UnitsPerPixel);
+
+    /// <summary>Millimetres per picture pixel from the sheet of paper (true size), or 0 when no sheet was used.</summary>
+    public double MillimetresPerPixel { get; init; }
+
+    /// <summary>The sheet used for scale: corners in the photo (0..1; TL, TR, BR, BL), or null.</summary>
+    public IReadOnlyList<NormPoint>? PaperCorners { get; init; }
+
+    /// <summary>Where the sheet is in the (straightened) picture, in pixels.</summary>
+    public Rect2d? PaperRect { get; init; }
+
+    /// <summary>The sheet size used (Auto resolved to Letter or A4).</summary>
+    public PaperSize PaperSize { get; init; }
+
+    /// <summary>True when the corners were found automatically (not set by hand).</summary>
+    public bool PaperFoundAutomatically { get; init; }
 }
 
 /// <summary>
@@ -44,7 +60,16 @@ public sealed class TraceJob : IDisposable
 
     Mat? _working;
     Mat? _workingAlpha;
-    int _workingSize;
+    string? _workingKey;
+    // The sheet of paper: found once per photo; how the working picture was straightened from it.
+    Point2f[]? _paperFound;
+    bool _paperTried;
+    Point2f[]? _paperCorners;
+    PaperSize _paperSize;
+    Rect2d? _paperRect;
+    double _mmPerPixel;
+    Mat? _paperSubject;
+    Mat? _sourcePreview;
 
     Mat? _subject;           // AI subject probability on the working picture (not the prepared one)
     bool _subjectTried;
@@ -99,7 +124,7 @@ public sealed class TraceJob : IDisposable
         {
             static long M(Mat? m) => m is null || m.IsDisposed ? 0 : m.Total() * m.ElemSize();
             static long D(Detection? d) => d is null ? 0 : M(d.Strokes) + d.Regions.Sum(r => M(r.Mask));
-            var total = M(_image?.Bgr) + M(_image?.Alpha) + M(_working) + M(_workingAlpha) + M(_subject) + M(_prepared)
+            var total = M(_image?.Bgr) + M(_image?.Alpha) + M(_working) + M(_workingAlpha) + M(_subject) + M(_prepared) + M(_paperSubject) + M(_sourcePreview)
                         + M(_lineInk) + D(_detected) + D(_cleaned);
             if (_edges is { } e) total += M(e.Fused) + M(e.Average);
             if (_raw is not null) total += _raw.Sum(r => (long)r.Points.Count * 16 + 64);
@@ -108,6 +133,13 @@ public sealed class TraceJob : IDisposable
             return total;
         }
     }
+
+    /// <summary>The photo as loaded (not straightened), at most 1600 px: for setting the sheet's corners by hand.</summary>
+    public Mat? SourcePreview => _sourcePreview;
+
+    /// <summary>The sheet's corners found automatically in the photo (0..1), or null.</summary>
+    public IReadOnlyList<NormPoint>? DetectedPaper =>
+        _paperFound?.Select(p => new NormPoint(p.X / (double)_sourceWidth, p.Y / (double)_sourceHeight)).ToList();
 
     /// <summary>The working-size picture (after scaling, before Prepare). Valid after the first Run.</summary>
     public Mat? Working => _working;
@@ -127,27 +159,58 @@ public sealed class TraceJob : IDisposable
         var lap = Stopwatch.StartNew();
         void Lap(string name) { stages[name] = stages.GetValueOrDefault(name) + lap.Elapsed.TotalMilliseconds; lap.Restart(); }
 
-        // 1. Working size.
-        if (_working is null || _workingSize != s.WorkingSize)
+        // 1. Working size: the photo scaled, or straightened onto the sheet of paper at a known scale.
+        var workingKey = Key(s.WorkingSize, s.UsePaper, s.UsePaper ? s.Paper : PaperSize.Auto,
+            s.UsePaper ? string.Join(";", s.PaperCorners.Select(p => $"{p.X:0.#####},{p.Y:0.#####}")) : "");
+        if (_working is null || _workingKey != workingKey)
         {
             DisposeFrom(Stage.Working);
             _image ??= _reload?.Invoke() ?? throw new InvalidOperationException("The picture is no longer loaded.");
-            _working = Prepare.ToWorkingSize(_image.Bgr, s.WorkingSize);
-            if (_image.Alpha is not null)
+            _sourcePreview ??= Prepare.ToWorkingSize(_image.Bgr, Math.Min(1600, Math.Max(_image.Width, _image.Height)));
+            _paperCorners = null;
+            _paperRect = null;
+            _mmPerPixel = 0;
+            if (s.UsePaper)
             {
-                _workingAlpha = new Mat();
-                Cv2.Resize(_image.Alpha, _workingAlpha, _working.Size(), 0, 0, InterpolationFlags.Linear);
-                // A small picture scaled up turns hard alpha edges into stair steps: soften them in proportion.
-                var upscale = _working.Cols / (double)_image.Width;
-                if (upscale > 1.5) Cv2.GaussianBlur(_workingAlpha, _workingAlpha, new OpenCvSharp.Size(0, 0), 0.45 * upscale);
+                if (!_paperTried)
+                {
+                    _paperTried = true;
+                    _paperFound = PaperDetector.Detect(_image.Bgr);
+                }
+                _paperCorners = s.PaperCorners.Count == 4
+                    ? s.PaperCorners.Select(p => new Point2f((float)(p.X * _image.Width), (float)(p.Y * _image.Height))).ToArray()
+                    : _paperFound;
             }
-            _workingSize = s.WorkingSize;
+            if (_paperCorners is not null)
+            {
+                var rectified = Rectifier.Rectify(_image.Bgr, _image.Alpha, _paperCorners, s.Paper, s.WorkingSize);
+                _working = rectified.Image;
+                _workingAlpha = rectified.Alpha;
+                _mmPerPixel = rectified.MillimetresPerPixel;
+                _paperRect = rectified.PaperRect;
+                _paperSize = Papers.Resolve(s.Paper, _paperCorners);
+            }
+            else
+            {
+                _working = Prepare.ToWorkingSize(_image.Bgr, s.WorkingSize);
+                if (_image.Alpha is not null)
+                {
+                    _workingAlpha = new Mat();
+                    Cv2.Resize(_image.Alpha, _workingAlpha, _working.Size(), 0, 0, InterpolationFlags.Linear);
+                    // A small picture scaled up turns hard alpha edges into stair steps: soften them in proportion.
+                    var upscale = _working.Cols / (double)_image.Width;
+                    if (upscale > 1.5) Cv2.GaussianBlur(_workingAlpha, _workingAlpha, new OpenCvSharp.Size(0, 0), 0.45 * upscale);
+                }
+            }
+            _workingKey = workingKey;
             if (_reload is not null)
             {
                 _image?.Dispose();
                 _image = null;
             }
         }
+        if (s.UsePaper && _paperCorners is null)
+            notes.Add("No sheet of paper found, so sizes are a guess: set the sheet's corners in Photo view.");
         Lap("load");
         cancel.ThrowIfCancellationRequested();
 
@@ -171,7 +234,14 @@ public sealed class TraceJob : IDisposable
                     _subject = AiModels.Subject(_models, _working);
                 }
                 subject = _subject?.Clone();
-                if (subject is null)
+                if (_paperRect is { } sheet)
+                {
+                    // Tools on paper: what differs from the sheet (plus the AI's view where it helps).
+                    _paperSubject ??= PaperObjects.Probability(_working, sheet, _subject);
+                    subject?.Dispose();
+                    subject = _paperSubject.Clone();
+                }
+                else if (subject is null)
                     notes.Add(s.Mode == TraceMode.Silhouette
                         ? "No background-removal model: plain-background method used (best on an even surface)."
                         : "Isolate subject needs the background removal model, which isn't bundled.");
@@ -250,7 +320,7 @@ public sealed class TraceJob : IDisposable
 
             // 6. Clean up (shape modes apply the areas to the shapes here), then size: OutputSize is the traced
             //    shape's longest side before any offset.
-            var cleanKey = Key(detectKey, s.CloseGaps, s.FillHoles, s.Keep,
+            var cleanKey = Key(detectKey, _mmPerPixel, s.Units, s.CloseGaps, s.FillHoles, s.Keep,
                 string.Join(";", s.Picks.Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Kind}")),
                 strokes ? "" : marksKey, s.Offset, s.OutputSize);
             if (_cleanKey != cleanKey || _cleaned is null)
@@ -281,7 +351,10 @@ public sealed class TraceJob : IDisposable
                 using var cleaned = Cleanup.Apply(_detected, s, edit: edit);
                 var box = Cleanup.Extents(cleaned);
                 var longest = box is { } b ? Math.Max(b.Width, b.Height) : Math.Max(_working.Cols, _working.Rows);
-                _unitsPerPixel = s.OutputSize / Math.Max(1, longest);
+                // On a sheet of paper the size is known; otherwise OutputSize sets the traced shape's longest side.
+                _unitsPerPixel = _mmPerPixel > 0
+                    ? (s.Units == OutputUnits.Inches ? _mmPerPixel / 25.4 : _mmPerPixel)
+                    : s.OutputSize / Math.Max(1, longest);
                 _cleaned = Math.Abs(s.Offset) > 1e-9 ? Cleanup.Offset(cleaned, s.Offset / _unitsPerPixel) : Cleanup.Offset(cleaned, 0);
                 _cleanKey = cleanKey;
             }
@@ -327,6 +400,11 @@ public sealed class TraceJob : IDisposable
                 Height = _working.Rows,
                 Settings = s,
                 UnitsPerPixel = _unitsPerPixel,
+                MillimetresPerPixel = _mmPerPixel,
+                PaperCorners = _paperCorners?.Select(p => new NormPoint(p.X / (double)_sourceWidth, p.Y / (double)_sourceHeight)).ToList(),
+                PaperRect = _paperRect,
+                PaperSize = _paperSize,
+                PaperFoundAutomatically = _paperCorners is not null && s.PaperCorners.Count != 4,
                 Notes = notes,
                 Elapsed = clock.Elapsed,
                 StageMs = stages.Where(kv => kv.Value >= 0.5).ToDictionary(kv => kv.Key, kv => kv.Value)
@@ -576,6 +654,8 @@ public sealed class TraceJob : IDisposable
             _working?.Dispose(); _working = null;
             _workingAlpha?.Dispose(); _workingAlpha = null;
             _subject?.Dispose(); _subject = null; _subjectTried = false;
+            _paperSubject?.Dispose(); _paperSubject = null;
+            _workingKey = null;
         }
         if (stage <= Stage.Prepared)
         {
@@ -608,6 +688,8 @@ public sealed class TraceJob : IDisposable
     public void Dispose()
     {
         DisposeFrom(Stage.Working);
+        _sourcePreview?.Dispose();
+        _sourcePreview = null;
         _image?.Dispose();
         _image = null;
     }

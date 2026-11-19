@@ -14,16 +14,25 @@ public enum ExportFormat
 {
     Dxf,
     Svg,
-    Pdf
+    Pdf,
+    /// <summary>The Gridfinity bin as a 3D mesh (any slicer).</summary>
+    Stl,
+    /// <summary>The Gridfinity bin as a 3MF model (slicers, with real units).</summary>
+    ThreeMf
 }
 
 public static class Exporters
 {
+    /// <summary>True for the 3D formats (the bin), false for the flat drawings.</summary>
+    public static bool IsMesh(ExportFormat format) => format is ExportFormat.Stl or ExportFormat.ThreeMf;
+
     public static string Extension(ExportFormat format) => format switch
     {
         ExportFormat.Dxf => ".dxf",
         ExportFormat.Svg => ".svg",
         ExportFormat.Pdf => ".pdf",
+        ExportFormat.Stl => ".stl",
+        ExportFormat.ThreeMf => ".3mf",
         _ => throw new ArgumentOutOfRangeException(nameof(format))
     };
 
