@@ -55,17 +55,9 @@ public class GridfinityTests
         var design = Designer.Design(tools, settings, new BinLayout());
         Assert.Equal(3, design.Tools.Count);
         Assert.True(design.GridX * design.GridY <= 12, $"{design.GridX}x{design.GridY}");
-        Assert.True(design.Width >= 150);
-        // No two pockets overlap, all inside the walls.
-        var boxes = design.Tools.Select(t => Designer.Bounds(t, settings)).ToList();
-        foreach (var b in boxes)
-        {
-            Assert.True(b.Min.X >= design.Wall - 1e-6 && b.Min.Y >= design.Wall - 1e-6);
-            Assert.True(b.Max.X <= design.Width - design.Wall + 1e-6 && b.Max.Y <= design.Depth - design.Wall + 1e-6);
-        }
-        for (var i = 0; i < boxes.Count; i++)
-            for (var j = i + 1; j < boxes.Count; j++)
-                Assert.False(boxes[i].Min.X < boxes[j].Max.X && boxes[j].Min.X < boxes[i].Max.X && boxes[i].Min.Y < boxes[j].Max.Y && boxes[j].Min.Y < boxes[i].Max.Y);
+        Assert.True(Math.Max(design.Width, design.Depth) >= 150);
+        // Pockets stay inside the walls and apart from each other (by their real outlines, not their boxes).
+        AssertPocketsApart(design);
 
         var plain = BinMesh.Build(Designer.Design(new List<ToolShape>(), new BinSettings { GridX = design.GridX, GridY = design.GridY, HeightUnits = design.HeightUnits, Magnets = true }, new BinLayout()));
         var mesh = BinMesh.Build(design);
@@ -74,7 +66,7 @@ public class GridfinityTests
         // The pockets take out at least the tools' own volume.
         var removed = plain.Volume() - mesh.Volume();
         var toolVolume = tools.Sum(t => t.Area) * settings.Depth;
-        Assert.InRange(removed, toolVolume, toolVolume * 2.2);
+        Assert.InRange(removed, toolVolume, toolVolume * 3.5); // plus clearance and finger slots
     }
 
     [Fact]
@@ -138,7 +130,7 @@ public class GridfinityTests
 
         var design = Designer.Design(tools, settings.Bin, settings.Layout);
         Assert.Equal(3, design.Tools.Count);
-        Assert.True(design.Width > 120);
+        Assert.True(Math.Max(design.Width, design.Depth) > 120);
         var mesh = BinMesh.Build(design);
         Assert.Equal(0, mesh.BadEdges());
         Assert.Equal(0, mesh.InventedVertices);
@@ -190,12 +182,97 @@ public class GridfinityTests
     public void An_automatic_bin_grows_when_a_tool_is_pushed_past_its_wall()
     {
         var tools = new List<ToolShape> { Rect(0, 60, 20, 0.3, 0.5) };
-        var settings = new BinSettings { FingerHoles = false };
+        var settings = new BinSettings { FingerSlots = false };
         var layout = new BinLayout { Tools = { new ToolPlacement { Anchor = new NormPoint(0.3, 0.5), X = 10, Y = 20 } } };
         var design = Designer.Design(tools, settings, layout);
         var b = Designer.Bounds(design.Tools[0], settings);
         Assert.True(b.Min.X >= design.Wall - 1e-6, $"min x {b.Min.X}");
         Assert.True(b.Max.X <= design.Width - design.Wall + 1e-6);
         Assert.Empty(design.Notes);
+    }
+
+    [Fact]
+    public void Tools_lie_along_their_own_axis()
+    {
+        // A "screwdriver": wide handle and a thin shaft off centre to one side of the handle's outline, turned 23°.
+        var outline = new List<Vec2> { new(0, -18), new(90, -14), new(95, -4), new(200, -3), new(200, 3), new(95, 4), new(90, 14), new(0, 18) };
+        var a = 23 * Math.PI / 180;
+        var turned = outline.Select(p => new Vec2(p.X * Math.Cos(a) - p.Y * Math.Sin(a), p.X * Math.Sin(a) + p.Y * Math.Cos(a))).ToList();
+        var lying = Designer.LyingAngle(turned);
+        var off = ((lying + 23) % 180 + 180) % 180; // turning by `lying` undoes the 23°
+        Assert.True(off < 0.6 || off > 179.4, $"lying {lying:0.0}°");
+    }
+
+    static void AssertPocketsApart(BinDesign design)
+    {
+        var settings = design.Settings;
+        var interior = new Clipper2Lib.Paths64 { Designer.ToPath(new[] {
+            new Vec2(design.Wall - 0.01, design.Wall - 0.01), new Vec2(design.Width - design.Wall + 0.01, design.Wall - 0.01),
+            new Vec2(design.Width - design.Wall + 0.01, design.Depth - design.Wall + 0.01), new Vec2(design.Wall - 0.01, design.Depth - design.Wall + 0.01) }) };
+        var pockets = design.Tools.Select(t => Designer.Pocket(t, settings)).ToList();
+        foreach (var p in pockets)
+        {
+            var outside = Clipper2Lib.Clipper.Difference(p, interior, Clipper2Lib.FillRule.NonZero);
+            Assert.True(Clipper2Lib.Clipper.Area(outside) / 1e6 < 1, $"pocket outside the wall by {Clipper2Lib.Clipper.Area(outside) / 1e6:0.0} mm²");
+        }
+        for (var i = 0; i < pockets.Count; i++)
+            for (var j = i + 1; j < pockets.Count; j++)
+            {
+                // At least most of the spacing between any two pockets.
+                var grown = Clipper2Lib.Clipper.InflatePaths(pockets[i], (settings.Spacing * 0.45) * Designer.Scale, Clipper2Lib.JoinType.Round, Clipper2Lib.EndType.Polygon);
+                var overlap = Clipper2Lib.Clipper.Intersect(grown, pockets[j], Clipper2Lib.FillRule.NonZero);
+                Assert.True(Clipper2Lib.Clipper.Area(overlap) / 1e6 < 0.5, $"pockets {i} and {j} closer than the spacing");
+            }
+    }
+
+    /// <summary>A screwdriver-like outline lying along X: handle (fat end) and a thin shaft.</summary>
+    static ToolShape Screwdriver(int index, double handle, double length, double width, double ax)
+    {
+        var shaft = width * 0.2;
+        var pts = new List<Vec2>
+        {
+            new(0, -width / 2), new(handle * 0.8, -width / 2), new(handle, -width * 0.3), new(handle, -shaft / 2),
+            new(length, -shaft / 2), new(length, shaft / 2), new(handle, shaft / 2), new(handle, width * 0.3),
+            new(handle * 0.8, width / 2), new(0, width / 2)
+        };
+        // Stood up as in a photo (shaft pointing up), centred on its box.
+        var stood = pts.Select(p => new Vec2(p.Y, p.X - length / 2)).ToList();
+        return new ToolShape { Index = index, Name = $"Tool {index + 1}", Outline = stood, Anchor = new NormPoint(ax, 0.5) };
+    }
+
+    [Fact]
+    public void Screwdrivers_nest_head_to_tail_with_finger_slots_across_them()
+    {
+        var tools = new List<ToolShape>
+        {
+            Screwdriver(0, 110, 216, 41, 0.1), Screwdriver(1, 95, 182, 35, 0.2), Screwdriver(2, 110, 215, 39, 0.3),
+            Screwdriver(3, 95, 181, 34, 0.4), Screwdriver(4, 95, 203, 34, 0.5), Screwdriver(5, 95, 228, 34, 0.6)
+        };
+        var settings = new BinSettings();
+        var design = Designer.Design(tools, settings, new BinLayout());
+        // Boxes alone (41 + 35 + 39 + 34 + 34 + 34 mm wide, each plus clearance and spacing) need 6 × 6;
+        // lying head to tail they share space.
+        Assert.True(design.GridX * design.GridY <= 30, $"{design.GridX}×{design.GridY}");
+        Assert.All(design.Tools, t => Assert.True(Math.Abs(Math.Sin((t.Placement.Rotation - Designer.LyingAngle(t.Tool.Outline)) * Math.PI / 180)) < 0.02, "lying straight"));
+        AssertPocketsApart(design);
+
+        // Bars square to the tools, each crossing every one of them.
+        Assert.InRange(design.Slots.Count, 1, 2);
+        foreach (var slot in design.Slots)
+        {
+            Assert.True(Math.Abs(slot.X1 - slot.X2) < 0.5, "a bar across horizontal tools runs up-down");
+            var region = Designer.SlotRegion(slot);
+            Assert.All(design.Tools, t => Assert.NotEmpty(Clipper2Lib.Clipper.Intersect(region, Designer.Pocket(t, settings), Clipper2Lib.FillRule.NonZero)));
+        }
+        var mesh = BinMesh.Build(design);
+        Assert.Equal(0, mesh.BadEdges());
+
+        // A user's own slot sticks; moving a tool doesn't move it.
+        var layout = design.ToLayout();
+        layout.Slots = new List<FingerSlot> { new(50, 20, 50, 120, 18) };
+        layout.Tools[0] = layout.Tools[0] with { X = layout.Tools[0].X + 2 };
+        var again = Designer.Design(tools, settings, layout);
+        Assert.Equal(new FingerSlot(50, 20, 50, 120, 18), Assert.Single(again.Slots));
+        Assert.False(again.SlotsAutomatic);
     }
 }

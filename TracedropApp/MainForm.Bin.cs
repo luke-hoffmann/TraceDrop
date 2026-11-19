@@ -24,7 +24,7 @@ sealed partial class MainForm
     readonly PaperView _paperView = new();
 
     readonly FlowLayoutPanel _binOptions = new() { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, Padding = new Padding(0, 3, 0, 0) };
-    readonly Segmented _binTool = new(null, "Move", "Finger hole", "Label");
+    readonly Segmented _binTool = new(null, "Move", "Finger slot", "Label");
     readonly RoundedButton _rotateButton = new("Turn 90°", ButtonKind.Secondary, 92);
     readonly RoundedButton _arrangeButton = new("Arrange", ButtonKind.Secondary, 90);
     readonly RoundedButton _putBackButton = new("Put back all", ButtonKind.Secondary, 116);
@@ -181,9 +181,9 @@ sealed partial class MainForm
     {
         PaneView.Bin => binTool switch
         {
-            BinTool.FingerHole => "Finger hole:  click beside a tool to add a finger hole. Scroll over one to size it; Delete removes it.",
+            BinTool.FingerSlot => "Finger slot:  drag across the tools to cut a bar for your fingers (Shift: straight), or click a tool for one across it. Scroll over a slot to size it.",
             BinTool.Label => "Label:  click where the text should go. Double-click a label to change it; scroll over it to size it.",
-            _ => "Move:  drag tools, finger holes and labels. Scroll over a tool to turn it (Shift: 1°), R turns 90°, Delete leaves it out."
+            _ => "Move:  drag tools, slots and labels (a slot's ends resize it). Scroll over a tool to turn it (Shift: 1°), R turns 90°, Delete removes."
         },
         PaneView.ThreeD => "3D:  drag to turn the bin, scroll to zoom, double-click to reset. This is exactly what the STL / 3MF contains.",
         PaneView.Photo => "Photo:  the sheet of paper sets the true size. If its outline is off, drag the corners onto the sheet's corners.",

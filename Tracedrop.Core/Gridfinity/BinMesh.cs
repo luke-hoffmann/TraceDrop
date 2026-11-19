@@ -123,13 +123,14 @@ public static class BinMesh
     }
 
     /// <summary>
-    /// Builds the bin. Pocket outlines are simplified to 10 µm; should the mesh still not close (it always has in
-    /// testing), it is rebuilt with coarser outlines (40 µm, then 0.12 mm) before giving up.
+    /// Builds the bin. Pocket outlines are simplified to 0.1 mm (a quarter of a nozzle width: invisible in print,
+    /// and far fewer near-collinear points for the triangulator); should the mesh not close, it is rebuilt with
+    /// coarser outlines (0.25 mm, then 0.5 mm).
     /// </summary>
     public static Mesh Build(BinDesign design, CancellationToken cancel = default)
     {
         Mesh? mesh = null;
-        foreach (var tolerance in new[] { 10, 40, 120 })
+        foreach (var tolerance in new[] { 100, 250, 500 })
         {
             mesh = Build(design, tolerance, cancel);
             if (mesh.BadEdges() == 0) return mesh;
@@ -192,13 +193,18 @@ public static class BinMesh
         var wall = design.Wall;
         var interior = new Paths64 { RoundedRect(wall, wall, width - wall, depth - wall, Math.Max(0.5, Spec.OuterRadius - wall)) };
         var pockets = new List<(Paths64 Region, double Floor)>();
-        // Outlines simplified (10 µm normally): far below print resolution, and no crowds of near-duplicate points for the
+        // Outlines simplified (0.1 mm normally): far below print resolution, and no crowds of near-duplicate points for the
         // triangulator to trip over.
         Paths64 Clean(Paths64 region) => Clipper.SimplifyPaths(Clipper.Intersect(region, interior, FillRule.NonZero), simplify, true);
         foreach (var t in design.Tools)
         {
             var region = Clean(Designer.Pocket(t, s));
             if (region.Count > 0) pockets.Add((region, height - t.Depth));
+        }
+        foreach (var slot in design.Slots)
+        {
+            var region = Clean(Designer.SlotRegion(slot));
+            if (region.Count > 0) pockets.Add((region, height - Designer.SlotDepth(slot, design)));
         }
         foreach (var label in design.Labels)
         {

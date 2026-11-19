@@ -71,11 +71,12 @@ public sealed class BinSettings
     /// <summary>6 × 2 mm magnet holes under each grid cell.</summary>
     public bool Magnets { get; set; }
 
-    /// <summary>New tools get finger holes on both sides, to lift them out.</summary>
-    public bool FingerHoles { get; set; } = true;
+    /// <summary>Finger slots: rounded bars across the tools, to get a finger under them. Placed automatically
+    /// until you change them.</summary>
+    public bool FingerSlots { get; set; } = true;
 
-    /// <summary>Finger hole diameter, mm.</summary>
-    public double FingerHoleSize { get; set; } = 22;
+    /// <summary>Finger slot width, mm.</summary>
+    public double FingerSlotWidth { get; set; } = 20;
 
     /// <summary>Largest bin the automatic size picks, in grid units per side (printer bed: 5 = 210 mm).</summary>
     public int MaxGrid { get; set; } = 6;
@@ -93,7 +94,7 @@ public sealed class BinSettings
         Clearance = Math.Clamp(Clearance, 0, 10);
         Depth = Math.Clamp(Depth, 1, 150);
         Spacing = Math.Clamp(Spacing, 0.8, 30);
-        FingerHoleSize = Math.Clamp(FingerHoleSize, 6, 60);
+        FingerSlotWidth = Math.Clamp(FingerSlotWidth, 6, 60);
         MaxGrid = Math.Clamp(MaxGrid, 1, 20);
         LabelDepth = Math.Clamp(LabelDepth, 0.2, 3);
         return this;
@@ -102,6 +103,17 @@ public sealed class BinSettings
 
 /// <summary>A finger hole beside a tool, in the tool's own coordinates (mm from its centre, y up).</summary>
 public sealed record FingerHole(double X, double Y, double Diameter);
+
+/// <summary>
+/// A finger slot: a bar with rounded ends from (X1, Y1) to (X2, Y2), in bin mm, cut as deep as the deepest pocket it
+/// crosses. Laid across several tools it lets a finger get under each of them.
+/// </summary>
+public sealed record FingerSlot(double X1, double Y1, double X2, double Y2, double Width)
+{
+    public Vec2 A => new(X1, Y1);
+    public Vec2 B => new(X2, Y2);
+    public FingerSlot Moved(double dx, double dy) => new(X1 + dx, Y1 + dy, X2 + dx, Y2 + dy, Width);
+}
 
 /// <summary>Where one traced tool sits in the bin.</summary>
 public sealed record ToolPlacement
@@ -117,7 +129,7 @@ public sealed record ToolPlacement
     public double Depth { get; init; }
     /// <summary>Left out of the bin.</summary>
     public bool Removed { get; init; }
-    /// <summary>Finger holes; null = automatic (from the bin settings).</summary>
+    /// <summary>Round finger holes beside this tool (none unless added); null = none.</summary>
     public List<FingerHole>? FingerHoles { get; init; }
 
     public ToolPlacement Copy() => this with { FingerHoles = FingerHoles?.ToList() };
@@ -131,10 +143,12 @@ public sealed class BinLayout
 {
     public List<ToolPlacement> Tools { get; set; } = new();
     public List<BinLabel> Labels { get; set; } = new();
+    /// <summary>Finger slots; null = placed automatically across the tools.</summary>
+    public List<FingerSlot>? Slots { get; set; }
 
-    public bool IsEmpty => Tools.Count == 0 && Labels.Count == 0;
+    public bool IsEmpty => Tools.Count == 0 && Labels.Count == 0 && Slots is null;
 
-    public BinLayout Clone() => new() { Tools = Tools.Select(t => t.Copy()).ToList(), Labels = Labels.ToList() };
+    public BinLayout Clone() => new() { Tools = Tools.Select(t => t.Copy()).ToList(), Labels = Labels.ToList(), Slots = Slots?.ToList() };
 
     public BinLayout Normalized()
     {
@@ -142,13 +156,15 @@ public sealed class BinLayout
         Tools.RemoveAll(t => t is null || t.Anchor is null || double.IsNaN(t.X) || double.IsNaN(t.Y));
         Labels ??= new();
         Labels.RemoveAll(l => l is null || string.IsNullOrWhiteSpace(l.Text));
+        Slots?.RemoveAll(sl => sl is null || double.IsNaN(sl.X1) || double.IsNaN(sl.Y1) || double.IsNaN(sl.X2) || double.IsNaN(sl.Y2) || sl.Width <= 0);
         return this;
     }
 
     public string Key() =>
         string.Join(";", Tools.Select(t => $"{t.Anchor.X:0.####},{t.Anchor.Y:0.####},{t.X:0.###},{t.Y:0.###},{t.Rotation:0.##},{t.Depth:0.##},{t.Removed}," +
                                            (t.FingerHoles is null ? "auto" : string.Join("/", t.FingerHoles.Select(f => $"{f.X:0.##}:{f.Y:0.##}:{f.Diameter:0.#}"))))) + "|" +
-        string.Join(";", Labels.Select(l => $"{l.Text}@{l.X:0.##},{l.Y:0.##},{l.Height:0.##},{l.Rotation:0.#}"));
+        string.Join(";", Labels.Select(l => $"{l.Text}@{l.X:0.##},{l.Y:0.##},{l.Height:0.##},{l.Rotation:0.#}")) + "|" +
+        (Slots is null ? "auto" : string.Join(";", Slots.Select(sl => $"{sl.X1:0.##},{sl.Y1:0.##},{sl.X2:0.##},{sl.Y2:0.##},{sl.Width:0.#}")));
 }
 
 /// <summary>A traced tool's outline in millimetres (y up), centred on its bounding box.</summary>
@@ -199,6 +215,10 @@ public sealed class BinDesign
     /// <summary>Tools traced but left out of the bin.</summary>
     public required List<ToolShape> LeftOut { get; init; }
     public required List<BinLabel> Labels { get; init; }
+    /// <summary>Finger slots in use (automatic or the user's).</summary>
+    public required List<FingerSlot> Slots { get; init; }
+    /// <summary>True while the slots are placed automatically.</summary>
+    public bool SlotsAutomatic { get; init; }
     public required List<string> Notes { get; init; }
 
     public double Width => GridX * Spec.Pitch - Spec.Gap;
@@ -211,7 +231,8 @@ public sealed class BinDesign
     public BinLayout ToLayout() => new()
     {
         Tools = Tools.Select(t => t.Placement.Copy()).Concat(LeftOut.Select(t => new ToolPlacement { Anchor = t.Anchor, Removed = true })).ToList(),
-        Labels = Labels.ToList()
+        Labels = Labels.ToList(),
+        Slots = SlotsAutomatic ? null : Slots.ToList()
     };
 }
 
@@ -219,12 +240,18 @@ public sealed class BinDesign
 public static class Designer
 {
     /// <summary>Smallest outline kept as a tool, mm².</summary>
-    public const double MinToolArea = 40;
+    public const double MinToolArea = 60;
 
-    /// <summary>The traced outer outlines as tools, in mm (y up), numbered left to right, top to bottom.</summary>
+    /// <summary>Pieces of one tool closer than twice this (mm) are joined: a clear handle traced in parts.</summary>
+    const double JoinGap = 1.5;
+
+    /// <summary>
+    /// The traced outer outlines as tools, in mm (y up), numbered left to right, top to bottom. Pieces less than
+    /// 3 mm apart become one tool (a transparent handle often traces in parts); specks are dropped.
+    /// </summary>
     public static List<ToolShape> ExtractTools(VectorDrawing drawing, double mmPerPixel)
     {
-        var shapes = new List<(List<Vec2> Outline, NormPoint Anchor)>();
+        var parts = new Paths64();
         foreach (var path in drawing.Paths)
         {
             var closed = path.Closed || path.Circle is not null;
@@ -232,9 +259,21 @@ public static class Designer
             var pixels = path.Flatten(0.25);
             if (pixels.Count < 3) continue;
             var mm = pixels.Select(p => new Vec2(p.X * mmPerPixel, -p.Y * mmPerPixel)).ToList();
-            var area = Geometry2D.SignedArea(mm);
-            if (Math.Abs(area) < MinToolArea) continue;
-            if (area < 0) mm.Reverse(); // counter-clockwise with y up
+            if (Math.Abs(Geometry2D.SignedArea(mm)) < 2) continue;
+            var outline = ToPath(mm);
+            if (Clipper.Area(outline) < 0) outline.Reverse();
+            parts.Add(outline);
+        }
+        // Grow, merge, shrink back: pieces within 2 × JoinGap join up; everything else keeps its exact outline.
+        var joined = Clipper.InflatePaths(
+            Clipper.InflatePaths(parts, JoinGap * Scale, JoinType.Round, EndType.Polygon, 2.0, 0.02 * Scale),
+            -JoinGap * Scale, JoinType.Round, EndType.Polygon, 2.0, 0.02 * Scale);
+        var shapes = new List<(List<Vec2> Outline, NormPoint Anchor)>();
+        foreach (var path in joined)
+        {
+            if (Clipper.Area(path) <= 0) continue; // holes: the pocket is the outer outline
+            var mm = path.Select(p => new Vec2(p.X / Scale, p.Y / Scale)).ToList();
+            if (Geometry2D.SignedArea(mm) < MinToolArea) continue;
             var cx = (mm.Min(p => p.X) + mm.Max(p => p.X)) / 2;
             var cy = (mm.Min(p => p.Y) + mm.Max(p => p.Y)) / 2;
             var anchor = new NormPoint(cx / mmPerPixel / Math.Max(1, drawing.Width), -cy / mmPerPixel / Math.Max(1, drawing.Height));
@@ -289,7 +328,12 @@ public static class Designer
             if (dx > 0 || dy > 0)
             {
                 placed = placed.Select(t => t with { Placement = t.Placement with { X = Math.Round(t.Placement.X + dx, 3), Y = Math.Round(t.Placement.Y + dy, 3) } }).ToList();
-                layout = new BinLayout { Tools = layout.Tools, Labels = layout.Labels.Select(l => l with { X = l.X + dx, Y = l.Y + dy }).ToList() };
+                layout = new BinLayout
+                {
+                    Tools = layout.Tools,
+                    Labels = layout.Labels.Select(l => l with { X = l.X + dx, Y = l.Y + dy }).ToList(),
+                    Slots = layout.Slots?.Select(sl => sl.Moved(dx, dy)).ToList()
+                };
             }
             (gridX, gridY) = FitGrid(placed, settings, wall);
             if (unplaced.Count > 0)
@@ -340,6 +384,8 @@ public static class Designer
             Tools = placed,
             LeftOut = leftOut,
             Labels = layout.Labels.ToList(),
+            Slots = layout.Slots?.ToList() ?? (settings.FingerSlots ? AutoSlots(placed, settings) : new List<FingerSlot>()),
+            SlotsAutomatic = layout.Slots is null,
             Notes = notes
         };
         foreach (var t in placed)
@@ -356,53 +402,9 @@ public static class Designer
 
     static PlacedTool Resolve(ToolShape tool, ToolPlacement placement, BinSettings settings)
     {
-        var holes = placement.FingerHoles ?? (settings.FingerHoles ? AutoFingerHoles(tool, settings.FingerHoleSize) : new List<FingerHole>());
+        var holes = placement.FingerHoles ?? new List<FingerHole>();
         var depth = placement.Depth > 0 ? placement.Depth : settings.Depth;
         return new PlacedTool(tool, placement, holes, depth);
-    }
-
-    /// <summary>
-    /// Two finger holes across the tool's narrow middle: on the line through its centre square to its long axis,
-    /// centred where that line leaves the outline (half the hole in the pocket, half beside it).
-    /// </summary>
-    public static List<FingerHole> AutoFingerHoles(ToolShape tool, double diameter)
-    {
-        var angle = MinAreaAngle(tool.Outline);
-        // Long axis direction after rotating by -angle: pick the axis with the larger extent.
-        var (c, s) = (Math.Cos(angle), Math.Sin(angle));
-        var xs = tool.Outline.Select(p => p.X * c + p.Y * s).ToList();
-        var ys = tool.Outline.Select(p => -p.X * s + p.Y * c).ToList();
-        var longAlongX = xs.Max() - xs.Min() >= ys.Max() - ys.Min();
-        var across = longAlongX ? new Vec2(-s, c) : new Vec2(c, s); // direction across the tool
-        var centre = new Vec2(0, 0);
-        var holes = new List<FingerHole>();
-        foreach (var sign in new[] { 1.0, -1.0 })
-        {
-            var dir = across * sign;
-            // Furthest crossing of the outline along this ray (the tool's edge on that side).
-            var best = double.NaN;
-            for (var i = 0; i < tool.Outline.Count; i++)
-            {
-                var a = tool.Outline[i];
-                var b = tool.Outline[(i + 1) % tool.Outline.Count];
-                if (RayHit(centre, dir, a, b) is { } t && (double.IsNaN(best) || t > best)) best = t;
-            }
-            if (double.IsNaN(best)) continue;
-            var at = centre + dir * best;
-            holes.Add(new FingerHole(Math.Round(at.X, 3), Math.Round(at.Y, 3), diameter));
-        }
-        return holes;
-    }
-
-    static double? RayHit(Vec2 origin, Vec2 dir, Vec2 a, Vec2 b)
-    {
-        var e = b - a;
-        var denom = Vec2.Cross(dir, e);
-        if (Math.Abs(denom) < 1e-12) return null;
-        var w = a - origin;
-        var t = Vec2.Cross(w, e) / denom;
-        var u = Vec2.Cross(w, dir) / denom;
-        return t >= 0 && u >= 0 && u <= 1 ? t : null;
     }
 
     /// <summary>Rotation (radians) whose axis-aligned box around the outline is smallest (convex hull edges).</summary>
@@ -478,56 +480,301 @@ public static class Designer
     }
 
     /// <summary>
-    /// Arranges tools from scratch: each turned to its narrowest box, packed (MaxRects) into the smallest bin
-    /// that holds them all, then centred.
+    /// Arranges tools from scratch by their real outlines: each lies along its long side and is dropped into the
+    /// bin as low as it goes (head to tail if that nests better), like packing a drawer by hand. Every bin width
+    /// up to the biggest automatic size is tried; the smallest bin wins.
     /// </summary>
     public static (int GridX, int GridY, List<PlacedTool> Placed) Arrange(List<ToolShape> tools, BinSettings settings, List<string>? notes = null)
     {
         var wall = Spec.Wall(settings.StackingLip);
-        var items = tools.Select(t =>
+        if (tools.Count == 0)
+            return (settings.GridX > 0 ? settings.GridX : 1, settings.GridY > 0 ? settings.GridY : 1, new List<PlacedTool>());
+
+        var shapes = tools.Select(t => new NestShape(t, settings)).ToList();
+        double Usable(int units) => units * Spec.Pitch - Spec.Gap - 2 * wall + settings.Spacing;
+        int UnitsFor(double used) => Math.Max(1, (int)Math.Ceiling((used - settings.Spacing + 2 * wall + Spec.Gap) / Spec.Pitch - 1e-9));
+
+        // Widths to try: from the narrowest that holds the longest tool lying down, to the biggest automatic size.
+        var widest = shapes.Max(sh => sh.MinWidth);
+        var widths = settings.GridX > 0
+            ? new List<int> { settings.GridX }
+            : Enumerable.Range(Math.Max(1, UnitsFor(widest)), Math.Max(1, Math.Max(settings.MaxGrid, UnitsFor(widest)) - Math.Max(1, UnitsFor(widest)) + 1)).ToList();
+
+        (int X, int Y, List<PlacedTool> Placed, double Score)? best = null;
+        foreach (var gx in widths)
         {
-            var angle = -MinAreaAngle(t.Outline) * 180 / Math.PI;
-            var r = Resolve(t, new ToolPlacement { Anchor = t.Anchor, Rotation = Normalize(angle) }, settings);
-            // Lie long side across (X): turn a further 90° if it came out tall.
-            var b = Bounds(r, settings);
-            if (b.Max.Y - b.Min.Y > b.Max.X - b.Min.X) r = r with { Placement = r.Placement with { Rotation = Normalize(r.Placement.Rotation + 90) } };
-            return r;
-        }).ToList();
-        if (items.Count == 0)
+            var nested = Nest(shapes, Usable(gx), settings);
+            if (nested is null) continue;
+            var gy = settings.GridY > 0 ? settings.GridY : UnitsFor(nested.Value.Height);
+            var fits = nested.Value.Height <= Usable(gy) + 1e-6;
+            var oversize = gx > settings.MaxGrid || gy > settings.MaxGrid;
+            // Smallest area first, then squarer; a bin over the biggest size or one that overflows only as a last resort.
+            var score = gx * gy + Math.Abs(gx - gy) * 0.01 + (oversize ? 1000 : 0) + (fits ? 0 : 10000);
+            if (best is null || score < best.Value.Score) best = (gx, gy, nested.Value.Placed, score);
+        }
+        if (best is null)
         {
-            var gx0 = settings.GridX > 0 ? settings.GridX : 1;
-            var gy0 = settings.GridY > 0 ? settings.GridY : 1;
-            return (gx0, gy0, items);
+            // Not even one tool fits the fixed width: lay them out anyway so they can be seen and moved.
+            var x0 = wall;
+            var lined = new List<PlacedTool>();
+            foreach (var t in tools)
+            {
+                var r = Resolve(t, new ToolPlacement { Anchor = t.Anchor }, settings);
+                var b = Bounds(r, settings);
+                lined.Add(r with { Placement = r.Placement with { X = x0 - b.Min.X, Y = wall - b.Min.Y } });
+                x0 += b.Max.X - b.Min.X + settings.Spacing;
+            }
+            notes?.Add("The tools are longer than the bin is wide: pick a wider bin, or Fit the tools.");
+            return (settings.GridX, Math.Max(1, settings.GridY), lined);
+        }
+        var (bx, by, placed, finalScore) = best.Value;
+        if (finalScore >= 10000) notes?.Add($"The tools don't all fit in a {bx}×{by} bin: make it deeper or leave some out.");
+        else if (finalScore >= 1000) notes?.Add($"These tools need a {bx}×{by} bin, more than the biggest size set ({settings.MaxGrid}×{settings.MaxGrid}).");
+        return (bx, by, Centre(placed, bx, by, settings));
+    }
+
+    /// <summary>A tool prepared for nesting: its outline in the four lying-down orientations, as column profiles.</summary>
+    sealed class NestShape
+    {
+        public const double Step = 0.5; // mm per column
+
+        public ToolShape Tool { get; }
+        public List<(double Rotation, double[] Bottom, double[] Top, double MinX, double MinY)> Orientations { get; } = new();
+        /// <summary>Narrowest width of the grown outline over the orientations, mm.</summary>
+        public double MinWidth { get; }
+        public double Area { get; }
+
+        public NestShape(ToolShape tool, BinSettings settings)
+        {
+            Tool = tool;
+            Area = tool.Area;
+            // Lying down: the long side along X, then also turned end for end, and standing up.
+            var angle = LyingAngle(tool.Outline);
+            var grow = settings.Clearance + settings.Spacing / 2;
+            var widths = new List<double>();
+            foreach (var turn in new[] { 0.0, 180.0, 90.0, 270.0 })
+            {
+                var rotation = Normalize(angle + turn);
+                var a = rotation * Math.PI / 180;
+                var (c, si) = (Math.Cos(a), Math.Sin(a));
+                var rotated = new Paths64 { ToPath(tool.Outline.Select(p => new Vec2(p.X * c - p.Y * si, p.X * si + p.Y * c))) };
+                var grown = Clipper.InflatePaths(rotated, grow * Scale, JoinType.Round, EndType.Polygon, 2.0, 0.05 * Scale);
+                var pts = grown.SelectMany(path => Dense(path)).ToList();
+                if (pts.Count == 0) continue;
+                var minX = pts.Min(p => p.X);
+                var maxX = pts.Max(p => p.X);
+                var minY = pts.Min(p => p.Y);
+                var columns = Math.Max(1, (int)Math.Ceiling((maxX - minX) / Step) + 1);
+                var bottom = Enumerable.Repeat(double.MaxValue, columns).ToArray();
+                var top = Enumerable.Repeat(double.MinValue, columns).ToArray();
+                foreach (var p in pts)
+                {
+                    var col = Math.Clamp((int)((p.X - minX) / Step), 0, columns - 1);
+                    bottom[col] = Math.Min(bottom[col], p.Y - minY);
+                    top[col] = Math.Max(top[col], p.Y - minY);
+                }
+                // Columns the outline only crosses (no sample landed): take the neighbours' span.
+                for (var k = 0; k < columns; k++)
+                {
+                    if (bottom[k] != double.MaxValue) continue;
+                    var l = k > 0 ? k - 1 : k + 1;
+                    bottom[k] = bottom[Math.Clamp(l, 0, columns - 1)];
+                    top[k] = top[Math.Clamp(l, 0, columns - 1)];
+                }
+                Orientations.Add((rotation, bottom, top, minX, minY));
+                widths.Add(maxX - minX);
+            }
+            MinWidth = widths.Count > 0 ? widths.Min() : 0;
         }
 
-        var candidates = new List<(int X, int Y)>();
-        if (settings.GridX > 0 && settings.GridY > 0) candidates.Add((settings.GridX, settings.GridY));
-        else
+        static IEnumerable<Vec2> Dense(Path64 path)
         {
-            var max = Math.Max(settings.MaxGrid, Math.Max(settings.GridX, settings.GridY));
-            for (var x = 1; x <= max; x++)
-                for (var y = 1; y <= max; y++)
-                    if ((settings.GridX == 0 || x == settings.GridX) && (settings.GridY == 0 || y == settings.GridY)) candidates.Add((x, y));
-            candidates = candidates.OrderBy(c => c.X * c.Y).ThenBy(c => Math.Abs(c.X - c.Y)).ThenByDescending(c => c.X).ToList();
+            for (var i = 0; i < path.Count; i++)
+            {
+                var a = new Vec2(path[i].X / Scale, path[i].Y / Scale);
+                var b = new Vec2(path[(i + 1) % path.Count].X / Scale, path[(i + 1) % path.Count].Y / Scale);
+                var n = Math.Max(1, (int)Math.Ceiling(Vec2.Distance(a, b) / (Step / 2)));
+                for (var k = 0; k < n; k++) yield return Vec2.Lerp(a, b, k / (double)n);
+            }
         }
 
-        foreach (var (gx, gy) in candidates)
+        static (double W, double H) Extent(List<Vec2> outline, double degrees)
         {
-            var packed = Pack(items, gx, gy, settings, wall, Array.Empty<PlacedTool>());
-            if (packed is not null) return (gx, gy, Centre(packed, gx, gy, settings));
+            var a = degrees * Math.PI / 180;
+            var (c, s) = (Math.Cos(a), Math.Sin(a));
+            var xs = outline.Select(p => p.X * c - p.Y * s).ToList();
+            var ys = outline.Select(p => p.X * s + p.Y * c).ToList();
+            return (xs.Max() - xs.Min(), ys.Max() - ys.Min());
         }
-        // Too big for the largest automatic bin: use it anyway and line the rest up beside it.
-        var (fx, fy) = candidates[^1];
-        notes?.Add($"The tools don't all fit in a {fx}×{fy} bin: set a bigger size, or leave some out.");
-        var x0 = wall;
-        var result = new List<PlacedTool>();
-        foreach (var t in items)
+    }
+
+    /// <summary>
+    /// Drops the shapes, biggest first, into a strip of the given usable width: each goes where (and which way round)
+    /// it keeps the pile lowest and wastes the least space underneath. Null if a shape is wider than the strip.
+    /// </summary>
+    static (List<PlacedTool> Placed, double Height)? Nest(List<NestShape> shapes, double width, BinSettings settings)
+    {
+        var step = NestShape.Step;
+        var columns = (int)Math.Floor(width / step);
+        if (columns <= 0) return null;
+        var sky = new double[columns];
+        var wall = Spec.Wall(settings.StackingLip);
+        var origin = wall - settings.Spacing / 2; // where the grown outlines may start
+        var placed = new List<PlacedTool>();
+        foreach (var shape in shapes.OrderByDescending(sh => sh.Area))
         {
-            var b = Bounds(t, settings);
-            result.Add(t with { Placement = t.Placement with { X = x0 + (t.Placement.X - b.Min.X), Y = wall + (t.Placement.Y - b.Min.Y) } });
-            x0 += b.Max.X - b.Min.X + settings.Spacing;
+            (int Orientation, int Column, double Y, double Peak, double Waste)? best = null;
+            for (var o = 0; o < shape.Orientations.Count; o++)
+            {
+                var (_, bottom, top, _, _) = shape.Orientations[o];
+                var span = bottom.Length;
+                if (span > columns) continue;
+                var stride = Math.Max(1, span > 200 ? 2 : 1);
+                for (var k = 0; k + span <= columns; k += stride)
+                {
+                    var y = 0.0;
+                    for (var c = 0; c < span; c++) y = Math.Max(y, sky[k + c] - bottom[c]);
+                    double peak = 0, waste = 0;
+                    for (var c = 0; c < span; c++)
+                    {
+                        peak = Math.Max(peak, y + top[c]);
+                        waste += y + bottom[c] - sky[k + c];
+                    }
+                    for (var c = 0; c < k; c++) peak = Math.Max(peak, sky[c]);
+                    for (var c = k + span; c < columns; c++) peak = Math.Max(peak, sky[c]);
+                    var better = best is null
+                        || peak < best.Value.Peak - 1e-6
+                        || (Math.Abs(peak - best.Value.Peak) <= 1e-6 && waste < best.Value.Waste - 1e-6);
+                    if (better) best = (o, k, y, peak, waste);
+                }
+                // Also flush against the right wall.
+                var right = columns - span;
+                if (right >= 0 && right % stride != 0)
+                {
+                    var y = 0.0;
+                    for (var c = 0; c < span; c++) y = Math.Max(y, sky[right + c] - bottom[c]);
+                    double peak = 0, waste = 0;
+                    for (var c = 0; c < span; c++) { peak = Math.Max(peak, y + top[c]); waste += y + bottom[c] - sky[right + c]; }
+                    for (var c = 0; c < right; c++) peak = Math.Max(peak, sky[c]);
+                    if (best is null || peak < best.Value.Peak - 1e-6 || (Math.Abs(peak - best.Value.Peak) <= 1e-6 && waste < best.Value.Waste - 1e-6))
+                        best = (o, right, y, peak, waste);
+                }
+            }
+            if (best is null) return null;
+            var (oi, col, yy, _, _) = best.Value;
+            var orientation = shape.Orientations[oi];
+            for (var c = 0; c < orientation.Top.Length; c++) sky[col + c] = Math.Max(sky[col + c], yy + orientation.Top[c]);
+            // The grown outline's min corner lands at (col·step, yy); the tool's centre is offset from it.
+            var x = origin + col * step - orientation.MinX;
+            var y0 = origin + yy - orientation.MinY;
+            placed.Add(Resolve(shape.Tool, new ToolPlacement { Anchor = shape.Tool.Anchor, Rotation = orientation.Rotation, X = Math.Round(x, 3), Y = Math.Round(y0, 3) }, settings));
         }
-        return (fx, fy, result);
+        return (placed, sky.Max());
+    }
+
+    /// <summary>
+    /// Finger slots across the tools: tools lying the same way share bars square to them, through the stretch they
+    /// all cover (two bars for long tools); a tool on its own gets a short bar across its middle.
+    /// </summary>
+    public static List<FingerSlot> AutoSlots(List<PlacedTool> placed, BinSettings settings)
+    {
+        var slots = new List<FingerSlot>();
+        var width = settings.FingerSlotWidth;
+        // Group by direction (an end-for-end turn is the same direction).
+        var groups = new List<List<PlacedTool>>();
+        foreach (var t in placed)
+        {
+            var axis = LongAxis(t);
+            var group = groups.FirstOrDefault(g => Math.Abs(Math.Sin((LongAxis(g[0]) - axis) * Math.PI / 180)) < Math.Sin(12 * Math.PI / 180));
+            if (group is null) groups.Add(new List<PlacedTool> { t });
+            else group.Add(t);
+        }
+        foreach (var group in groups)
+        {
+            var axis = LongAxis(group[0]) * Math.PI / 180;
+            var along = new Vec2(Math.Cos(axis), Math.Sin(axis));
+            var across = new Vec2(-along.Y, along.X);
+            // Each tool's extent along and across the shared direction.
+            var spans = group.Select(t =>
+            {
+                var pts = t.OutlineInBin();
+                return (A0: pts.Min(p => Vec2.Dot(p, along)), A1: pts.Max(p => Vec2.Dot(p, along)),
+                    C0: pts.Min(p => Vec2.Dot(p, across)), C1: pts.Max(p => Vec2.Dot(p, across)));
+            }).ToList();
+            var common0 = spans.Max(sp => sp.A0);
+            var common1 = spans.Min(sp => sp.A1);
+            var c0 = spans.Min(sp => sp.C0) - settings.Clearance;
+            var c1 = spans.Max(sp => sp.C1) + settings.Clearance;
+            var shortest = spans.Min(sp => sp.A1 - sp.A0);
+            List<double> positions;
+            if (common1 - common0 >= width)
+            {
+                // Bars where every tool is: one in the middle, or two (at a third and two thirds) for long tools.
+                var length = common1 - common0;
+                positions = shortest >= 140 && length >= 3 * width
+                    ? new List<double> { common0 + length / 3, common0 + 2 * length / 3 }
+                    : new List<double> { (common0 + common1) / 2 };
+            }
+            else
+            {
+                // The tools don't overlap enough: a bar through each one's middle (merging ones close together).
+                positions = spans.Select(sp => (sp.A0 + sp.A1) / 2).OrderBy(v => v).ToList();
+                var merged = new List<double>();
+                foreach (var v in positions)
+                    if (merged.Count == 0 || v - merged[^1] > width * 1.5) merged.Add(v);
+                positions = merged;
+            }
+            foreach (var at in positions)
+            {
+                // From the first tool across to the last, ends just past them.
+                var inGroup = spans.Where(sp => sp.A0 <= at && at <= sp.A1).ToList();
+                var lo = inGroup.Count > 0 ? inGroup.Min(sp => sp.C0) - settings.Clearance : c0;
+                var hi = inGroup.Count > 0 ? inGroup.Max(sp => sp.C1) + settings.Clearance : c1;
+                var a = along * at + across * (lo + width * 0.15);
+                var b = along * at + across * (hi - width * 0.15);
+                slots.Add(new FingerSlot(Math.Round(a.X, 3), Math.Round(a.Y, 3), Math.Round(b.X, 3), Math.Round(b.Y, 3), width));
+            }
+        }
+        return slots;
+    }
+
+    /// <summary>Direction of a placed tool's long side, degrees.</summary>
+    static double LongAxis(PlacedTool t) => t.Placement.Rotation - LyingAngle(t.Tool.Outline);
+
+    /// <summary>
+    /// The turn (degrees) that lays the outline flat along X: its principal axis (from the area's second moments,
+    /// so a screwdriver lines up with its shaft, not with one side of its handle) turned horizontal.
+    /// </summary>
+    public static double LyingAngle(IReadOnlyList<Vec2> outline)
+    {
+        double area = 0, cx = 0, cy = 0, sxx = 0, syy = 0, sxy = 0;
+        for (var i = 0; i < outline.Count; i++)
+        {
+            var p = outline[i];
+            var q = outline[(i + 1) % outline.Count];
+            var cross = p.X * q.Y - q.X * p.Y;
+            area += cross;
+            cx += (p.X + q.X) * cross;
+            cy += (p.Y + q.Y) * cross;
+            sxx += (p.X * p.X + p.X * q.X + q.X * q.X) * cross;
+            syy += (p.Y * p.Y + p.Y * q.Y + q.Y * q.Y) * cross;
+            sxy += (p.X * q.Y + 2 * p.X * p.Y + 2 * q.X * q.Y + q.X * p.Y) * cross;
+        }
+        if (area < 0)
+        {
+            // Clockwise outline: the same integrals with the sign flipped.
+            area = -area; cx = -cx; cy = -cy; sxx = -sxx; syy = -syy; sxy = -sxy;
+        }
+        area /= 2;
+        if (area < 1e-9) return 0;
+        cx /= 6 * area;
+        cy /= 6 * area;
+        // Central second moments ∫x², ∫y², ∫xy over the area.
+        var xx = sxx / 12 - area * cx * cx;
+        var yy = syy / 12 - area * cy * cy;
+        var xy = sxy / 24 - area * cx * cy;
+        var axis = 0.5 * Math.Atan2(2 * xy, xx - yy) * 180 / Math.PI;
+        return Normalize(-axis);
     }
 
     static double Normalize(double degrees)
@@ -637,6 +884,9 @@ public static class Designer
 
     public const double Scale = 1000;
 
+    /// <summary>Pockets fill in gaps up to twice this wide, mm.</summary>
+    const double FillGap = 2;
+
     public static Path64 ToPath(IEnumerable<Vec2> mm) => new(mm.Select(p => new Point64((long)Math.Round(p.X * Scale), (long)Math.Round(p.Y * Scale))));
 
     public static Path64 Circle(Vec2 centre, double radius, int segments = 0)
@@ -654,13 +904,32 @@ public static class Designer
     /// <summary>A tool's pocket (outline grown by the clearance, plus its finger holes), in bin coordinates.</summary>
     public static Paths64 Pocket(PlacedTool t, BinSettings settings)
     {
+        // Grown by the clearance, with slits and notches narrower than 4 mm filled in (they'd only print as
+        // fragile slivers): grow 2 mm further, then shrink back by 2 mm.
         var outline = new Paths64 { ToPath(t.OutlineInBin()) };
-        var grown = settings.Clearance > 1e-6
-            ? Clipper.InflatePaths(outline, settings.Clearance * Scale, JoinType.Round, EndType.Polygon, 2.0, 0.02 * Scale)
-            : Clipper.Union(outline, FillRule.NonZero);
+        var grown = Clipper.InflatePaths(
+            Clipper.InflatePaths(outline, (settings.Clearance + FillGap) * Scale, JoinType.Round, EndType.Polygon, 2.0, 0.02 * Scale),
+            -FillGap * Scale, JoinType.Round, EndType.Polygon, 2.0, 0.02 * Scale);
         if (t.FingerHoles.Count == 0) return grown;
         var holes = new Paths64(t.FingerHoles.Select(h => Circle(t.ToBin(new Vec2(h.X, h.Y)), h.Diameter / 2)));
         return Clipper.Union(grown, holes, FillRule.NonZero);
+    }
+
+    /// <summary>A finger slot as a region: the bar with rounded ends, in bin coordinates.</summary>
+    public static Paths64 SlotRegion(FingerSlot slot)
+    {
+        if (Vec2.Distance(slot.A, slot.B) < 0.01) return new Paths64 { Circle(slot.A, slot.Width / 2) };
+        return Clipper.InflatePaths(new Paths64 { ToPath(new[] { slot.A, slot.B }) }, slot.Width / 2 * Scale, JoinType.Round, EndType.Round, 2.0, 0.02 * Scale);
+    }
+
+    /// <summary>How deep a slot is cut: as deep as the deepest pocket it crosses (or the bin's depth).</summary>
+    public static double SlotDepth(FingerSlot slot, BinDesign design)
+    {
+        var region = SlotRegion(slot);
+        var depth = 0.0;
+        foreach (var t in design.Tools)
+            if (Clipper.Intersect(region, Pocket(t, design.Settings), FillRule.NonZero).Count > 0) depth = Math.Max(depth, t.Depth);
+        return depth > 0 ? depth : design.Settings.Depth;
     }
 
     /// <summary>A label's engraved strokes as regions, in bin coordinates.</summary>

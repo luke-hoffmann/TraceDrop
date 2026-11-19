@@ -237,7 +237,7 @@ public sealed class TraceJob : IDisposable
                 if (_paperRect is { } sheet)
                 {
                     // Tools on paper: what differs from the sheet (plus the AI's view where it helps).
-                    _paperSubject ??= PaperObjects.Probability(_working, sheet, _subject);
+                    _paperSubject ??= PaperObjects.Probability(_working, sheet, _subject, _mmPerPixel);
                     subject?.Dispose();
                     subject = _paperSubject.Clone();
                 }

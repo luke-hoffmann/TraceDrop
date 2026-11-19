@@ -12,7 +12,7 @@ public static class Presets
             {
                 Mode = TraceMode.Silhouette, UsePaper = true, FillHoles = true, Detail = 45, Threshold = 50, Smoothness = 60,
                 CornerSharpness = 45, Curves = CurveStyle.LinesAndArcs, SnapCircles = true, Despeckle = 1, WorkingSize = 2400,
-                Bin = new() { Enabled = true, Clearance = 1.0, Depth = 15, StackingLip = true, FingerHoles = true }
+                Bin = new() { Enabled = true, Clearance = 1.0, Depth = 15, StackingLip = true, FingerSlots = true }
             }, true),
 
         new Preset("Gridfinity, snug", "Like Gridfinity bin with a tight 0.5 mm fit, deeper pockets and magnet holes.",
@@ -20,7 +20,7 @@ public static class Presets
             {
                 Mode = TraceMode.Silhouette, UsePaper = true, FillHoles = true, Detail = 55, Threshold = 50, Smoothness = 50,
                 CornerSharpness = 55, Curves = CurveStyle.LinesAndArcs, SnapCircles = true, Despeckle = 1, WorkingSize = 3600,
-                Bin = new() { Enabled = true, Clearance = 0.5, Depth = 20, StackingLip = true, Magnets = true, FingerHoles = true }
+                Bin = new() { Enabled = true, Clearance = 0.5, Depth = 20, StackingLip = true, Magnets = true, FingerSlots = true }
             }, true),
 
         new Preset("Object / tool", "Outer outline and holes of an object on a plain surface. Foam inserts, shadow boards, templates.",

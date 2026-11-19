@@ -12,8 +12,8 @@ enum BinTool
 {
     /// <summary>Drag tools, finger holes and labels; scroll over a tool turns it.</summary>
     Move,
-    /// <summary>Click beside a tool to add a finger hole.</summary>
-    FingerHole,
+    /// <summary>Drag across tools to add a finger slot (a click puts one across the tool under it).</summary>
+    FingerSlot,
     /// <summary>Click to add an engraved label.</summary>
     Label
 }
@@ -27,6 +27,10 @@ sealed class BinView : Control
     BinDesign? _design;
     readonly List<PlacedTool> _tools = new();
     readonly List<BinLabel> _labels = new();
+    readonly List<FingerSlot> _slots = new();
+    bool _slotsOwn;
+    int _selSlot = -1;
+    int _slotEnd; // which part of the selected slot is dragged: 0 body, 1 end A, 2 end B
     int _selTool = -1;
     int _selHole = -1;
     int _selLabel = -1;
@@ -36,7 +40,7 @@ sealed class BinView : Control
     double _scale = 1;
     PointF _offset;
     bool _fitted = true;
-    enum Drag { None, Tool, Hole, Label, Pan }
+    enum Drag { None, Tool, Hole, Label, Slot, NewSlot, Pan }
     Drag _drag;
     Point _downAt;
     PointF _downOffset;
@@ -79,20 +83,24 @@ sealed class BinView : Control
     /// <summary>The selected tool, or null.</summary>
     public PlacedTool? SelectedTool => _selTool >= 0 && _selTool < _tools.Count ? _tools[_selTool] : null;
 
-    public bool HasSelection => _selTool >= 0 || _selLabel >= 0;
+    public bool HasSelection => _selTool >= 0 || _selLabel >= 0 || _selSlot >= 0;
 
     public void SetDesign(BinDesign? design)
     {
-        if (_drag is Drag.Tool or Drag.Hole or Drag.Label) return; // the drag's working copy wins
+        if (_drag is Drag.Tool or Drag.Hole or Drag.Label or Drag.Slot or Drag.NewSlot) return; // the drag's working copy wins
         var sizeChanged = design is null || _design is null || design.GridX != _design.GridX || design.GridY != _design.GridY;
         _design = design;
         _tools.Clear();
         _labels.Clear();
+        _slots.Clear();
         if (design is not null)
         {
             _tools.AddRange(design.Tools);
             _labels.AddRange(design.Labels);
+            _slots.AddRange(design.Slots);
+            _slotsOwn = !design.SlotsAutomatic;
         }
+        if (_selSlot >= _slots.Count) _selSlot = -1;
         if (_selTool >= _tools.Count) _selTool = -1;
         if (_selLabel >= _labels.Count) _selLabel = -1;
         if (_selTool < 0 || _selHole >= _tools[_selTool].FingerHoles.Count) _selHole = -1;
@@ -203,6 +211,25 @@ sealed class BinView : Control
                     i == _selTool ? Palette.Accent : Palette.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
         }
 
+        // Finger slots.
+        for (var i = 0; i < _slots.Count; i++)
+        {
+            var slot = _slots[i];
+            using var region = ScreenPaths(Designer.SlotRegion(slot));
+            using var fill = new SolidBrush(Color.FromArgb(i == _selSlot ? 120 : 90, 170, 178, 190));
+            using var edge = new Pen(i == _selSlot ? Palette.Accent : Color.FromArgb(120, 130, 145), i == _selSlot ? Math.Max(2f, this.Px(2)) : 1.2f);
+            g.FillPath(fill, region);
+            g.DrawPath(edge, region);
+            if (i != _selSlot) continue;
+            var r = this.Px(5);
+            using var white = new SolidBrush(Color.White);
+            foreach (var end in new[] { ToScreen(slot.A), ToScreen(slot.B) })
+            {
+                g.FillEllipse(white, end.X - r, end.Y - r, 2 * r, 2 * r);
+                g.DrawEllipse(edge, end.X - r, end.Y - r, 2 * r, 2 * r);
+            }
+        }
+
         // Labels.
         for (var i = 0; i < _labels.Count; i++)
         {
@@ -296,6 +323,21 @@ sealed class BinView : Control
         return -1;
     }
 
+    /// <summary>The slot under the point (topmost), and which part: 0 body, 1 end A, 2 end B (ends of the selected one only).</summary>
+    (int Slot, int End) HitSlot(Vec2 mm)
+    {
+        var reach = this.Px(7) / _scale;
+        if (_selSlot >= 0 && _selSlot < _slots.Count)
+        {
+            var s = _slots[_selSlot];
+            if (Vec2.Distance(mm, s.A) <= Math.Max(reach, s.Width * 0.3)) return (_selSlot, 1);
+            if (Vec2.Distance(mm, s.B) <= Math.Max(reach, s.Width * 0.3)) return (_selSlot, 2);
+        }
+        for (var i = _slots.Count - 1; i >= 0; i--)
+            if (SegmentDistance(mm, _slots[i].A, _slots[i].B) <= _slots[i].Width / 2) return (i, 0);
+        return (-1, 0);
+    }
+
     int HitLabel(Vec2 mm)
     {
         for (var i = _labels.Count - 1; i >= 0; i--)
@@ -325,7 +367,8 @@ sealed class BinView : Control
     {
         Tools = _tools.Select(t => t.Placement with { FingerHoles = t.FingerHoles.ToList() })
             .Concat(_design?.LeftOut.Select(t => new ToolPlacement { Anchor = t.Anchor, Removed = true }) ?? Enumerable.Empty<ToolPlacement>()).ToList(),
-        Labels = _labels.ToList()
+        Labels = _labels.ToList(),
+        Slots = _slotsOwn ? _slots.ToList() : null
     };
 
     void Commit(object? tag = null)
@@ -352,7 +395,14 @@ sealed class BinView : Control
     /// <summary>Delete: a finger hole or label goes; a tool is left out of the bin.</summary>
     public void DeleteSelected()
     {
-        if (_selLabel >= 0)
+        if (_selSlot >= 0)
+        {
+            _slots.RemoveAt(_selSlot);
+            _selSlot = -1;
+            _slotsOwn = true;
+            Commit();
+        }
+        else if (_selLabel >= 0)
         {
             _labels.RemoveAt(_selLabel);
             _selLabel = -1;
@@ -422,22 +472,14 @@ sealed class BinView : Control
 
         switch (_tool)
         {
-            case BinTool.FingerHole:
-            {
-                var i = HitTool(mm);
-                if (i < 0) { i = NearestTool(mm); if (i < 0) return; }
-                var t = _tools[i];
-                var local = t.ToLocal(mm);
-                var holes = t.FingerHoles.ToList();
-                holes.Add(new FingerHole(Math.Round(local.X, 2), Math.Round(local.Y, 2), _design.Settings.FingerHoleSize));
-                UpdateTool(i, p => p, holes);
-                _selTool = i;
-                _selHole = holes.Count - 1;
-                _selLabel = -1;
-                Commit();
-                SelectionChanged?.Invoke();
+            case BinTool.FingerSlot:
+                // Press and drag across the tools; a plain click puts a slot across the tool under it.
+                _slots.Add(new FingerSlot(mm.X, mm.Y, mm.X, mm.Y, _design.Settings.FingerSlotWidth));
+                _selSlot = _slots.Count - 1;
+                _selTool = _selLabel = _selHole = -1;
+                _drag = Drag.NewSlot;
+                Invalidate();
                 return;
-            }
             case BinTool.Label:
                 LabelRequested?.Invoke(mm);
                 return;
@@ -445,11 +487,23 @@ sealed class BinView : Control
 
         var hole = HitHole(mm);
         if (hole >= 0) { _selHole = hole; _drag = Drag.Hole; Invalidate(); return; }
+        var (slotHit, end) = HitSlot(mm);
+        if (slotHit >= 0)
+        {
+            _selSlot = slotHit;
+            _slotEnd = end;
+            _selTool = _selLabel = _selHole = -1;
+            _drag = Drag.Slot;
+            SelectionChanged?.Invoke();
+            Invalidate();
+            return;
+        }
         var label = HitLabel(mm);
-        if (label >= 0) { _selLabel = label; _selTool = -1; _selHole = -1; _drag = Drag.Label; SelectionChanged?.Invoke(); Invalidate(); return; }
+        if (label >= 0) { _selLabel = label; _selTool = -1; _selHole = -1; _selSlot = -1; _drag = Drag.Label; SelectionChanged?.Invoke(); Invalidate(); return; }
         var tool = HitTool(mm);
         _selLabel = -1;
         _selHole = -1;
+        _selSlot = -1;
         _selTool = tool;
         _drag = tool >= 0 ? Drag.Tool : Drag.Pan;
         SelectionChanged?.Invoke();
@@ -481,7 +535,7 @@ sealed class BinView : Control
         {
             var hover = HitTool(mm);
             if (hover != _hoverTool) { _hoverTool = hover; Invalidate(); }
-            Cursor = _tool != BinTool.Move ? Cursors.Cross : hover >= 0 || HitLabel(mm) >= 0 ? Cursors.SizeAll : Cursors.Default;
+            Cursor = _tool != BinTool.Move ? Cursors.Cross : hover >= 0 || HitLabel(mm) >= 0 || HitSlot(mm).Slot >= 0 ? Cursors.SizeAll : Cursors.Default;
             return;
         }
         var dx = e.X - _downAt.X;
@@ -508,6 +562,30 @@ sealed class BinView : Control
                 UpdateTool(_selTool, p => p, holes);
                 break;
             }
+            case Drag.NewSlot when _selSlot >= 0:
+            {
+                var sl = _slots[_selSlot];
+                var b = mm;
+                if ((ModifierKeys & Keys.Shift) != 0)
+                {
+                    // Shift: straight across or along.
+                    if (Math.Abs(b.X - sl.X1) > Math.Abs(b.Y - sl.Y1)) b = new Vec2(b.X, sl.Y1);
+                    else b = new Vec2(sl.X1, b.Y);
+                }
+                _slots[_selSlot] = sl with { X2 = Math.Round(b.X, 3), Y2 = Math.Round(b.Y, 3) };
+                break;
+            }
+            case Drag.Slot when _selSlot >= 0:
+            {
+                var sl = _slots[_selSlot];
+                _slots[_selSlot] = _slotEnd switch
+                {
+                    1 => sl with { X1 = Math.Round(mm.X, 3), Y1 = Math.Round(mm.Y, 3) },
+                    2 => sl with { X2 = Math.Round(mm.X, 3), Y2 = Math.Round(mm.Y, 3) },
+                    _ => sl.Moved(step.X, step.Y)
+                };
+                break;
+            }
             case Drag.Label when _selLabel >= 0:
                 _labels[_selLabel] = _labels[_selLabel] with { X = Math.Round(_labels[_selLabel].X + step.X, 3), Y = Math.Round(_labels[_selLabel].Y + step.Y, 3) };
                 break;
@@ -520,7 +598,37 @@ sealed class BinView : Control
         base.OnMouseUp(e);
         var drag = _drag;
         _drag = Drag.None;
-        if (_moved && drag is Drag.Tool or Drag.Hole or Drag.Label) Commit();
+        if (drag == Drag.NewSlot && _selSlot >= 0)
+        {
+            if (!_moved && _design is not null)
+            {
+                // A click: across the tool under it (square to its long side), or a round hole where nothing is.
+                var at = ToMm(e.Location);
+                var i = HitTool(at);
+                _slots[_selSlot] = i >= 0 ? AcrossTool(_tools[i], at) : _slots[_selSlot];
+            }
+            _slotsOwn = true;
+            Commit();
+            SelectionChanged?.Invoke();
+            return;
+        }
+        if (_moved && drag == Drag.Slot) _slotsOwn = true;
+        if (_moved && drag is Drag.Tool or Drag.Hole or Drag.Label or Drag.Slot) Commit();
+    }
+
+    /// <summary>A slot through <paramref name="at"/> straight across the tool, a little past both its sides.</summary>
+    FingerSlot AcrossTool(PlacedTool t, Vec2 at)
+    {
+        var axis = (t.Placement.Rotation - Designer.LyingAngle(t.Tool.Outline)) * Math.PI / 180;
+        var across = new Vec2(-Math.Sin(axis), Math.Cos(axis));
+        var outline = t.OutlineInBin();
+        var lo = outline.Min(p => Vec2.Dot(p - at, across));
+        var hi = outline.Max(p => Vec2.Dot(p - at, across));
+        var width = _design!.Settings.FingerSlotWidth;
+        var margin = _design.Settings.Clearance - width * 0.15;
+        var a = at + across * (lo - margin);
+        var b = at + across * (hi + margin);
+        return new FingerSlot(Math.Round(a.X, 3), Math.Round(a.Y, 3), Math.Round(b.X, 3), Math.Round(b.Y, 3), width);
     }
 
     protected override void OnDoubleClick(EventArgs e)
@@ -551,6 +659,15 @@ sealed class BinView : Control
                 UpdateTool(_selTool, p => p, holes);
                 _selHole = hole;
                 Commit(("hole", _selTool, hole));
+                return;
+            }
+            var (slotHit, _) = HitSlot(mm);
+            if (slotHit >= 0)
+            {
+                _slots[slotHit] = _slots[slotHit] with { Width = Math.Clamp(_slots[slotHit].Width + steps, 6, 60) };
+                _selSlot = slotHit;
+                _slotsOwn = true;
+                Commit(("slot", slotHit));
                 return;
             }
             var label = HitLabel(mm);
@@ -597,18 +714,19 @@ sealed class BinView : Control
                 RotateSelected(e.Shift ? -90 : 90);
                 e.Handled = true;
                 break;
-            case Keys.Left or Keys.Right or Keys.Up or Keys.Down when _selTool >= 0 || _selLabel >= 0:
+            case Keys.Left or Keys.Right or Keys.Up or Keys.Down when _selTool >= 0 || _selLabel >= 0 || _selSlot >= 0:
             {
                 var step = e.Shift ? 5.0 : 0.5;
                 var (dx, dy) = e.KeyCode switch { Keys.Left => (-step, 0.0), Keys.Right => (step, 0.0), Keys.Up => (0.0, step), _ => (0.0, -step) };
-                if (_selLabel >= 0) _labels[_selLabel] = _labels[_selLabel] with { X = _labels[_selLabel].X + dx, Y = _labels[_selLabel].Y + dy };
+                if (_selSlot >= 0) { _slots[_selSlot] = _slots[_selSlot].Moved(dx, dy); _slotsOwn = true; }
+                else if (_selLabel >= 0) _labels[_selLabel] = _labels[_selLabel] with { X = _labels[_selLabel].X + dx, Y = _labels[_selLabel].Y + dy };
                 else UpdateTool(_selTool, p => p with { X = Math.Round(p.X + dx, 3), Y = Math.Round(p.Y + dy, 3) });
                 Commit("nudge");
                 e.Handled = true;
                 break;
             }
             case Keys.Escape:
-                _selTool = _selHole = _selLabel = -1;
+                _selTool = _selHole = _selLabel = _selSlot = -1;
                 SelectionChanged?.Invoke();
                 Invalidate();
                 break;
@@ -768,9 +886,17 @@ sealed class PaperView : Control
 
     public string Caption { get; set; } = "";
 
+    Size _photoSize;
+
+    /// <summary>
+    /// The photo to show (owned by the caller). Only the new bitmap is looked at: the previous one may already
+    /// have been disposed by its owner.
+    /// </summary>
     public void SetPhoto(Bitmap? photo)
     {
-        if (!ReferenceEquals(photo, _photo) && (photo is null || _photo is null || photo.Size != _photo.Size)) _fitted = true;
+        var size = photo?.Size ?? Size.Empty;
+        if (size != _photoSize) _fitted = true;
+        _photoSize = size;
         _photo = photo;
         Invalidate();
     }

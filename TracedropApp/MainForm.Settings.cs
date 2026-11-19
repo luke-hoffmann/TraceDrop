@@ -25,8 +25,8 @@ sealed partial class MainForm
     readonly DropdownRow _heightUnits = new("Height", HeightChoices());
     readonly SliderRow _clearance = new("Clearance", 0, 3, 1, 0.1, v => $"{v:0.0} mm") { Hint = "snug → loose" };
     readonly SliderRow _pocketDepth = new("Pocket depth", 2, 60, 15, 0.5, v => $"{v:0.#} mm");
-    readonly ToggleRow _fingerHoles = new("Finger holes", true, "Beside each tool, to lift it out");
-    readonly SliderRow _fingerSize = new("Finger hole size", 10, 40, 22, 1, v => $"{v:0} mm");
+    readonly ToggleRow _fingerHoles = new("Finger slots", true, "Bars across the tools, to lift them out");
+    readonly SliderRow _fingerSize = new("Slot width", 10, 40, 20, 1, v => $"{v:0} mm");
     readonly ToggleRow _lip = new("Stacking lip", true, "Bins stack on each other");
     readonly ToggleRow _magnets = new("Magnet holes", false, "6 × 2 mm, four under each cell");
     readonly DropdownRow _maxGrid = new("Biggest bin when fitting", "3 × 3 (126 mm)", "4 × 4 (168 mm)", "5 × 5 (210 mm)", "6 × 6 (252 mm)", "7 × 7 (294 mm)", "8 × 8 (336 mm)");
@@ -298,8 +298,8 @@ sealed partial class MainForm
             _heightUnits.Box.SelectedIndex = s.Bin.HeightUnits < 2 ? 0 : Math.Clamp(s.Bin.HeightUnits - 1, 1, 19);
             _clearance.Value = s.Bin.Clearance;
             _pocketDepth.Value = s.Bin.Depth;
-            _fingerHoles.Checked = s.Bin.FingerHoles;
-            _fingerSize.Value = s.Bin.FingerHoleSize;
+            _fingerHoles.Checked = s.Bin.FingerSlots;
+            _fingerSize.Value = s.Bin.FingerSlotWidth;
             _lip.Checked = s.Bin.StackingLip;
             _magnets.Checked = s.Bin.Magnets;
             _maxGrid.Box.SelectedIndex = Math.Clamp(s.Bin.MaxGrid - 3, 0, 5);
@@ -364,8 +364,8 @@ sealed partial class MainForm
             Clearance = _clearance.Value,
             Depth = _pocketDepth.Value,
             Spacing = _template.Bin.Spacing,
-            FingerHoles = _fingerHoles.Checked,
-            FingerHoleSize = _fingerSize.Value,
+            FingerSlots = _fingerHoles.Checked,
+            FingerSlotWidth = _fingerSize.Value,
             StackingLip = _lip.Checked,
             Magnets = _magnets.Checked,
             MaxGrid = Math.Max(0, _maxGrid.Box.SelectedIndex) + 3,

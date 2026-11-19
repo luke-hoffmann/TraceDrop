@@ -104,7 +104,11 @@ public static class BinExport
         }
         var outline = RoundedRect(0, 0, design.Width, design.Depth, Spec.OuterRadius);
         Add(new[] { outline }, "BIN", (0, 0, 0), PathRole.Outer);
-        foreach (var t in design.Tools) Add(Designer.Pocket(t, design.Settings), "POCKETS", (200, 30, 60), PathRole.Hole);
+        // Pockets and finger slots together: one outline per opening, as you'd cut it.
+        var openings = new Paths64();
+        foreach (var t in design.Tools) openings.AddRange(Designer.Pocket(t, design.Settings));
+        foreach (var slot in design.Slots) openings.AddRange(Designer.SlotRegion(slot));
+        Add(Clipper.Union(openings, FillRule.NonZero), "POCKETS", (200, 30, 60), PathRole.Hole);
         foreach (var l in design.Labels) Add(Designer.LabelRegion(l), "LABELS", (30, 90, 200), PathRole.Hole);
         return new VectorDrawing(design.Width, design.Depth, paths);
     }

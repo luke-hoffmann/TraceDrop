@@ -15,11 +15,16 @@ no install, nothing uploaded, and your settings and presets travel inside the ex
 1. Lay the tools flat on a sheet of **Letter or A4** paper (Legal, A3 and Tabloid work too) on a darker
    surface, and take the photo from straight above. Tools may stick out over the sheet's edges.
 2. Drop the photo on Tracedrop. The **Gridfinity bin** preset finds the sheet, straightens the photo onto it so
-   sizes are true to about half a millimetre, traces each tool and lays them into the smallest bin they fit.
+   sizes are true to about half a millimetre, traces each tool (shadows and marks on the sheet are left out) and
+   lays them into the smallest bin they fit.
 3. Check the views:
-   - **Bin**: the bin from above. Drag tools to move them, scroll over a tool to turn it (Shift: 1°, R: 90°),
-     **Finger hole** adds a finger hole where you click (scroll over one to size it), **Label** engraves text
-     (double-click to change it). Delete leaves a tool out; **Put back** returns it; **Arrange** packs them again.
+   - **Bin**: the bin from above. Tools are laid in automatically by their real outlines, long side across,
+     head to tail where that nests tighter, in the smallest bin that holds them. **Finger slots** (rounded bars
+     across the tools, cut as deep as the pockets) are placed across them so you can get a finger under each one.
+     Drag tools to move them, scroll over a tool to turn it (Shift: 1°, R: 90°). **Finger slot**: drag across
+     the tools to cut another bar (Shift keeps it straight), or click a tool for one across it; drag a slot or its
+     ends, scroll over it to change its width. **Label** engraves text (double-click to change it). Delete
+     removes a slot or label, or leaves a tool out; **Put back** returns it; **Arrange** lays everything out again.
      Each tool can have its own pocket depth.
    - **3D**: the finished bin, exactly as exported. Drag to turn it.
    - **Trace**: the straightened photo with the outlines; fix any outline with the editing tools below.
@@ -28,7 +33,7 @@ no install, nothing uploaded, and your settings and presets travel inside the ex
    laser cutting, are under Output).
 
 Bin settings (left): width and depth in grid units (or fit the tools), height in 7 mm units (or fit the pockets),
-clearance around each tool (0.5 mm snug, 1 mm easy), pocket depth, finger holes and their size, stacking lip,
+clearance around each tool (0.5 mm snug, 1 mm easy), pocket depth, finger slots and their width, stacking lip,
 6 × 2 mm magnet holes, and the biggest bin the automatic size may use (your printer bed). Undo and redo cover
 every change, per photo.
 
@@ -146,8 +151,11 @@ size). PDF is a true-size one-page vector.
 
 Gridfinity: photo → find the sheet (brightest, colourless area; edges refined to sub-pixel) → straighten it
 with a perspective transform at a known mm per pixel → tools = what differs from the sheet (a smooth model of
-the sheet's own shade, edge at half the local contrast so soft shadows stay out; the AI subject mask helps where
-it can) → the tracing pipeline below → tools in mm → arranged (MaxRects, each turned to its narrowest box) →
+the sheet's own shade; a shadow is the paper's colour only darker, so grey darkening counts only beyond what a
+shadow does; edges at half the local contrast; with the AI subject mask, only what lies near something the AI
+also sees) → the tracing pipeline below → tools in mm (pieces of one tool joined) → nested (each laid along its
+principal axis and dropped into the bin as low as it goes, either way round, by its true outline) → finger slots
+across tools lying the same way →
 the bin as stacked layers (foot steps, body with pockets, lip) whose outlines are split wherever another layer's
 vertex touches them, so every face meets vertex to vertex → STL / 3MF.
 

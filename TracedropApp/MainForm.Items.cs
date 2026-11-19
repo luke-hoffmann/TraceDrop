@@ -298,11 +298,13 @@ sealed partial class MainForm
         if (ReferenceEquals(item, _shown)) return;
 
         // Only the shown picture keeps its full-size bitmaps.
+        // Views let go of the bitmaps first: the previous picture's are disposed right after.
+        _preview.SetPictures(null, null, null);
+        _paperView.SetPhoto(null);
         if (_shown is not null && !_shown.Removed)
         {
             _shown.DisposePreview();
         }
-        _preview.SetPictures(null, null, null);
         _shown = item;
         _worker.Selected = item;
         if (item is not null)
@@ -684,7 +686,7 @@ sealed partial class MainForm
             {
                 try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
-            if (ReferenceEquals(item, _shown)) { _shown = null; _preview.Clear(); }
+            if (ReferenceEquals(item, _shown)) { _shown = null; _preview.Clear(); _paperView.SetPhoto(null); _binView.SetDesign(null); _view3d.SetMesh(null); }
             item.Dispose();
         }
         if (_list.Items.Count > 0)
