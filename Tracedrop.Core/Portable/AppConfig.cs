@@ -18,13 +18,16 @@ public sealed class AppConfig
     public List<UserPreset> UserPresets { get; set; } = new();
 
     /// <summary>Formats written for every traced picture; the first one is what dragging a row gives.</summary>
-    public List<ExportFormat> Formats { get; set; } = new() { ExportFormat.Dxf };
+    public List<ExportFormat> Formats { get; set; } = new() { ExportFormat.Stl };
 
     /// <summary>Run the AI models on the graphics card. Switched off automatically if the GPU fails.</summary>
     public bool UseGpu { get; set; } = true;
 
     /// <summary>Show the vector over the photo (true) or on white (false).</summary>
     public bool OverlayOnPhoto { get; set; } = true;
+
+    /// <summary>The view shown last: 0 Bin, 1 3D, 2 Trace, 3 Lines, 4 Photo.</summary>
+    public int View { get; set; }
 
     /// <summary>Collapsed state of the settings sections, by title.</summary>
     public List<string> CollapsedSections { get; set; } = new();
@@ -40,7 +43,8 @@ public sealed class AppConfig
         foreach (var p in config.UserPresets) p.Settings = p.Settings.Normalized();
         config.Formats ??= new();
         config.Formats = config.Formats.Where(Enum.IsDefined).Distinct().ToList();
-        if (config.Formats.Count == 0) config.Formats.Add(ExportFormat.Dxf);
+        if (config.Formats.Count == 0) config.Formats.Add(ExportFormat.Stl);
+        config.View = Math.Clamp(config.View, 0, 4);
         config.CollapsedSections ??= new();
         return config;
     }

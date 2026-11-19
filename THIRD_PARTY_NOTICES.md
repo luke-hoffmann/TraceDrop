@@ -12,6 +12,8 @@ or AGPL (which is why it has its own tracer instead of Potrace, which is GPL).
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) with DirectML | MIT | Running the AI models on any DirectX 12 GPU or the CPU |
 | [Magick.NET](https://github.com/dlemstra/Magick.NET) (ImageMagick, libheif, libde265 and other codecs) | Apache-2.0 / ImageMagick licence; codecs under their own open-source licences | Reading HEIC/HEIF, AVIF, GIF, PSD and other formats |
 | [netDxf](https://github.com/haplokuon/netDxf) | MIT | Writing DXF files |
+| [Clipper2](https://github.com/AngusJohnson/Clipper2) | Boost Software License 1.0 | Polygon unions, differences and offsets for the Gridfinity bins |
+| [LibTessDotNet](https://github.com/speps/LibTessDotNet) | MIT (SGI Free Software License B origins) | Triangulating the bins' flat faces |
 | Microsoft Visual C++ runtime (vcruntime140, msvcp140) | Microsoft Visual C++ Redistributable terms (free to redistribute) | Needed by OpenCV and ONNX Runtime; bundled so Tracedrop runs on PCs without it |
 
 HEIC pictures use the HEVC codec, which is covered by patents in some countries; Tracedrop only decodes.
@@ -25,6 +27,8 @@ HEIC pictures use the HEVC codec, which is covered by patents in some countries;
 | Informative Drawings, learning to generate line drawings (Chan, Durand, Isola, CVPR 2022) | MIT | https://github.com/carolineec/informative-drawings, ONNX export by rocca |
 
 ## Algorithms
+- Gridfinity, the open modular storage standard by Zack Freedman: grid, foot and lip dimensions.
+- MaxRects bin packing (Jylänki, 2010), for arranging tools in a bin.
 
 - Zhang & Suen (1984), fast parallel thinning.
 - Winnemöller et al. (2012), XDoG stylised line drawing (built-in line art without a model).

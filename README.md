@@ -2,12 +2,41 @@
 
 # Tracedrop
 
-Turn any picture into clean vector outlines (DXF, SVG, PDF) on your own PC, with a live preview. Drop in
+Photograph your tools on a sheet of paper and get a **Gridfinity bin** with a pocket for each one (STL, 3MF),
+or turn any picture into clean vector outlines (DXF, SVG, PDF), on your own PC, with a live preview. Drop in
 photos (PNG, JPEG, HEIC, WebP, TIFF and more), tune a few sliders, then drag the finished file
 straight out of the window into SolidWorks, Fusion, Explorer or anywhere else. One portable `Tracedrop.exe`,
 no install, nothing uploaded, and your settings and presets travel inside the exe.
 
-![Tracedrop](docs/screenshot.png)
+![Tracedrop](docs/gridfinity.png)
+
+## Gridfinity bins from a photo
+
+1. Lay the tools flat on a sheet of **Letter or A4** paper (Legal, A3 and Tabloid work too) on a darker
+   surface, and take the photo from straight above. Tools may stick out over the sheet's edges.
+2. Drop the photo on Tracedrop. The **Gridfinity bin** preset finds the sheet, straightens the photo onto it so
+   sizes are true to about half a millimetre, traces each tool and lays them into the smallest bin they fit.
+3. Check the views:
+   - **Bin**: the bin from above. Drag tools to move them, scroll over a tool to turn it (Shift: 1°, R: 90°),
+     **Finger hole** adds a finger hole where you click (scroll over one to size it), **Label** engraves text
+     (double-click to change it). Delete leaves a tool out; **Put back** returns it; **Arrange** packs them again.
+     Each tool can have its own pocket depth.
+   - **3D**: the finished bin, exactly as exported. Drag to turn it.
+   - **Trace**: the straightened photo with the outlines; fix any outline with the editing tools below.
+   - **Photo**: the photo as taken with the sheet outlined. Drag its corners if they're off.
+4. Drag the **Drag STL** chip into your slicer or a folder (3MF, and the top view as DXF / SVG for foam or
+   laser cutting, are under Output).
+
+Bin settings (left): width and depth in grid units (or fit the tools), height in 7 mm units (or fit the pockets),
+clearance around each tool (0.5 mm snug, 1 mm easy), pocket depth, finger holes and their size, stacking lip,
+6 × 2 mm magnet holes, and the biggest bin the automatic size may use (your printer bed). Undo and redo cover
+every change, per photo.
+
+The bins follow the open Gridfinity standard: 42 mm grid, 7 mm height units, 41.5 mm per cell, the stepped 45°
+foot (0.8 / 1.8 / 2.15 mm) and a stacking lip, magnets at 26 mm spacing. The mesh is built watertight by
+construction (every test bin is checked edge by edge) so slicers take it as is.
+
+![The bin in 3D](docs/gridfinity-3d.png)
 
 ## Use
 
@@ -114,6 +143,15 @@ SVG is sized in real units with hairline strokes (laser software and Fusion's In
 size). PDF is a true-size one-page vector.
 
 ## How it works
+
+Gridfinity: photo → find the sheet (brightest, colourless area; edges refined to sub-pixel) → straighten it
+with a perspective transform at a known mm per pixel → tools = what differs from the sheet (a smooth model of
+the sheet's own shade, edge at half the local contrast so soft shadows stay out; the AI subject mask helps where
+it can) → the tracing pipeline below → tools in mm → arranged (MaxRects, each turned to its narrowest box) →
+the bin as stacked layers (foot steps, body with pockets, lip) whose outlines are split wherever another layer's
+vertex touches them, so every face meets vertex to vertex → STL / 3MF.
+
+Tracing:
 
 ```
 picture ──► load (any format, EXIF rotation, transparency) ──► scale to working size

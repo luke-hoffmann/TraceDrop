@@ -35,7 +35,7 @@ sealed partial class MainForm : Form
 
     // Preview pane
     readonly PreviewView _preview = new();
-    readonly Segmented _viewMode = new(null, "Result", "Lines", "Detected", "Prepared", "Original");
+    readonly Segmented _viewMode = new(null, "Bin", "3D", "Trace", "Lines", "Photo");
     readonly DragChip _dragChip = new();
     readonly Label _statsLabel = NewLabel("", UiFonts.Small, Palette.Muted);
     readonly LinkLabel _clearEditsLink = new();
@@ -126,6 +126,7 @@ sealed partial class MainForm : Form
 
         LoadSettingsIntoUi(_config.LastSettings, _config.LastPreset);
         UpdateEmptyState();
+        ShowView();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -156,7 +157,7 @@ sealed partial class MainForm : Form
         title.Dock = DockStyle.Left;
         title.TextAlign = ContentAlignment.MiddleLeft;
 
-        var subtitle = NewLabel("Pictures to clean vector outlines, on this PC", UiFonts.Small, Palette.Muted);
+        var subtitle = NewLabel("Photos of tools to Gridfinity bins and clean outlines, on this PC", UiFonts.Small, Palette.Muted);
         subtitle.AutoSize = false;
         subtitle.Dock = DockStyle.Fill;
         subtitle.TextAlign = ContentAlignment.BottomLeft;
@@ -180,17 +181,8 @@ sealed partial class MainForm : Form
         var pane = new Panel { Dock = DockStyle.Fill };
 
         _viewMode.Dock = DockStyle.Left;
-        _viewMode.Width = 440;
-        _viewMode.SelectedIndex = _config.OverlayOnPhoto ? 0 : 1;
-        _viewMode.SelectedIndexChanged += (_, _) =>
-        {
-            _preview.Mode = (PreviewMode)_viewMode.SelectedIndex;
-            if (_viewMode.SelectedIndex <= 1)
-            {
-                _config.OverlayOnPhoto = _viewMode.SelectedIndex == 0;
-                SaveConfigSoon();
-            }
-        };
+        _viewMode.Width = 400;
+        _viewMode.SelectedIndexChanged += (_, _) => ShowView();
         _dragChip.Dock = DockStyle.Right;
         _dragChip.Width = 150;
         _dragChip.Visible = false;
@@ -201,7 +193,6 @@ sealed partial class MainForm : Form
 
         var card = new CardPanel { Dock = DockStyle.Fill, Padding = new Padding(4) };
         _preview.Dock = DockStyle.Fill;
-        _preview.Mode = (PreviewMode)_viewMode.SelectedIndex;
         _preview.EditCommitted += Preview_EditCommitted;
         _preview.SelectionChanged += UpdateEditorBar;
         _preview.ToolChanged += tool => { _palette.Selected = tool; UpdateEditorBar(); };
@@ -212,6 +203,7 @@ sealed partial class MainForm : Form
         _palette.ToolSelected += tool => { _preview.Tool = tool; _preview.Focus(); UpdateEditorBar(); };
         card.Controls.Add(_preview);
         card.Controls.Add(_palette);
+        BuildBinViews(card);
 
         BuildOptionsBar();
 
@@ -277,6 +269,8 @@ sealed partial class MainForm : Form
 
         _optionsBar.Controls.Add(selectActions);
         _optionsBar.Controls.Add(_areaShape);
+        _optionsBar.Controls.Add(_binOptions);
+        _optionsBar.Controls.Add(_photoOptions);
         // Docked right: the last added sits furthest right, so this reads Undo, Redo, Clear edits.
         _optionsBar.Controls.Add(_undoButton);
         _optionsBar.Controls.Add(_redoButton);
@@ -289,18 +283,23 @@ sealed partial class MainForm : Form
     {
         var tool = _preview.Tool;
         _palette.Selected = tool;
-        _toolHint.Text = (tool switch
-        {
-            EditTool.Select => "Select (V)",
-            EditTool.Points => "Edit points (A)",
-            EditTool.Pen => "Pen (P)",
-            EditTool.Find => "Find lines here (F)",
-            EditTool.Erase => "Erase lines here (E)",
-            _ => "Hand (H)"
-        }) + ":  " + ToolHint(tool);
-        _areaShape.Visible = tool is EditTool.Find or EditTool.Erase;
+        var view = CurrentView;
+        var trace = view is PaneView.Trace or PaneView.Lines;
+        _toolHint.Text = trace
+            ? (tool switch
+            {
+                EditTool.Select => "Select (V)",
+                EditTool.Points => "Edit points (A)",
+                EditTool.Pen => "Pen (P)",
+                EditTool.Find => "Find lines here (F)",
+                EditTool.Erase => "Erase lines here (E)",
+                _ => "Hand (H)"
+            }) + ":  " + ToolHint(tool)
+            : ViewHint(view, _binView.Tool);
+        _areaShape.Visible = trace && tool is EditTool.Find or EditTool.Erase;
         var selectActions = _optionsBar.Controls["selectActions"];
-        if (selectActions is not null) selectActions.Visible = tool == EditTool.Select;
+        if (selectActions is not null) selectActions.Visible = trace && tool == EditTool.Select;
+        UpdateBinOptions();
         _editPointsButton.Enabled = _preview.CanEditSelection;
         _deleteButton.Enabled = _preview.HasSelection;
         _keepOnlyButton.Enabled = _preview.CanEditSelection;

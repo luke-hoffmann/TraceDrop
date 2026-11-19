@@ -47,6 +47,9 @@ public static class Spec
 /// <summary>How bins are made from traced tools. Shared through presets like the other settings.</summary>
 public sealed class BinSettings
 {
+    /// <summary>Make a bin from the traced tools (off = just trace outlines).</summary>
+    public bool Enabled { get; set; }
+
     /// <summary>Grid units across (X) and deep (Y); 0 = the smallest bin that fits the tools.</summary>
     public int GridX { get; set; }
     public int GridY { get; set; }
@@ -277,6 +280,17 @@ public static class Designer
         }
         else
         {
+            // An automatic size follows the tools: if one was pushed past the left or bottom wall, everything moves
+            // over so the bin grows on that side instead of cutting the pocket off.
+            var minX = placed.Min(t => Bounds(t, settings).Min.X);
+            var minY = placed.Min(t => Bounds(t, settings).Min.Y);
+            var dx = settings.GridX == 0 && minX < wall ? wall - minX : 0;
+            var dy = settings.GridY == 0 && minY < wall ? wall - minY : 0;
+            if (dx > 0 || dy > 0)
+            {
+                placed = placed.Select(t => t with { Placement = t.Placement with { X = Math.Round(t.Placement.X + dx, 3), Y = Math.Round(t.Placement.Y + dy, 3) } }).ToList();
+                layout = new BinLayout { Tools = layout.Tools, Labels = layout.Labels.Select(l => l with { X = l.X + dx, Y = l.Y + dy }).ToList() };
+            }
             (gridX, gridY) = FitGrid(placed, settings, wall);
             if (unplaced.Count > 0)
             {

@@ -185,4 +185,17 @@ public class GridfinityTests
         var ratio = Bar(manual) / Bar(auto);
         Assert.InRange(ratio, 1.01, 1.03);
     }
+
+    [Fact]
+    public void An_automatic_bin_grows_when_a_tool_is_pushed_past_its_wall()
+    {
+        var tools = new List<ToolShape> { Rect(0, 60, 20, 0.3, 0.5) };
+        var settings = new BinSettings { FingerHoles = false };
+        var layout = new BinLayout { Tools = { new ToolPlacement { Anchor = new NormPoint(0.3, 0.5), X = 10, Y = 20 } } };
+        var design = Designer.Design(tools, settings, layout);
+        var b = Designer.Bounds(design.Tools[0], settings);
+        Assert.True(b.Min.X >= design.Wall - 1e-6, $"min x {b.Min.X}");
+        Assert.True(b.Max.X <= design.Width - design.Wall + 1e-6);
+        Assert.Empty(design.Notes);
+    }
 }

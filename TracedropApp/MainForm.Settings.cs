@@ -1,6 +1,8 @@
 using Tracedrop.Core;
 using Tracedrop.Core.Ai;
 using Tracedrop.Core.Export;
+using Tracedrop.Core.Gridfinity;
+using Tracedrop.Core.Paper;
 using Tracedrop.Core.Portable;
 
 namespace TracedropApp;
@@ -14,6 +16,25 @@ sealed partial class MainForm
     readonly ContextMenuStrip _presetMenu = new() { Font = UiFonts.Body, ShowImageMargin = false };
     readonly NoteLabel _presetNote = new();
 
+    readonly SectionHeader _binHeader = new("Gridfinity bin");
+    readonly ToggleRow _binOn = new("Make a Gridfinity bin", true, "A pocket for each traced tool");
+    readonly ToggleRow _usePaper = new("Size from a sheet of paper", true, "Tools on the sheet, photo from above");
+    readonly DropdownRow _paperSize = new("Paper", "Letter or A4", "Letter", "A4", "Legal", "A3", "Tabloid");
+    readonly DropdownRow _gridX = new("Width", GridChoices("Fit the tools"));
+    readonly DropdownRow _gridY = new("Depth", GridChoices("Fit the tools"));
+    readonly DropdownRow _heightUnits = new("Height", HeightChoices());
+    readonly SliderRow _clearance = new("Clearance", 0, 3, 1, 0.1, v => $"{v:0.0} mm") { Hint = "snug → loose" };
+    readonly SliderRow _pocketDepth = new("Pocket depth", 2, 60, 15, 0.5, v => $"{v:0.#} mm");
+    readonly ToggleRow _fingerHoles = new("Finger holes", true, "Beside each tool, to lift it out");
+    readonly SliderRow _fingerSize = new("Finger hole size", 10, 40, 22, 1, v => $"{v:0} mm");
+    readonly ToggleRow _lip = new("Stacking lip", true, "Bins stack on each other");
+    readonly ToggleRow _magnets = new("Magnet holes", false, "6 × 2 mm, four under each cell");
+    readonly DropdownRow _maxGrid = new("Biggest bin when fitting", "3 × 3 (126 mm)", "4 × 4 (168 mm)", "5 × 5 (210 mm)", "6 × 6 (252 mm)", "7 × 7 (294 mm)", "8 × 8 (336 mm)");
+
+    static string[] GridChoices(string fit) => new[] { fit }.Concat(Enumerable.Range(1, 10).Select(n => $"{n} ({n * 42} mm)")).ToArray();
+    static string[] HeightChoices() => new[] { "Fit the pockets" }.Concat(Enumerable.Range(2, 19).Select(n => $"{n} units ({n * 7} mm)")).ToArray();
+
+    readonly SectionHeader _traceHeader = new("Tracing");
     readonly Segmented _mode = new("Find", "Outline", "Shapes", "Edges", "Line art");
     readonly NoteLabel _modeNote = new();
     readonly SliderRow _detail = new("Detail", 0, 100, 50) { Hint = "key outlines → every detail" };
@@ -52,6 +73,8 @@ sealed partial class MainForm
     readonly ToggleRow _formatDxf = new("DXF", true, "CAD: SolidWorks, Fusion, AutoCAD");
     readonly ToggleRow _formatSvg = new("SVG", false, "Laser, Inkscape, Illustrator, web");
     readonly ToggleRow _formatPdf = new("PDF", false, "Print, Illustrator, CorelDRAW");
+    readonly ToggleRow _formatStl = new("STL", true, "The bin, for any 3D-printing slicer");
+    readonly ToggleRow _format3mf = new("3MF", false, "The bin with real units: Bambu, Prusa, Orca");
     readonly ToggleRow _useGpu = new("Use graphics card for AI", true, "Off = CPU: slower, works on any PC");
 
     readonly RoundedButton _applyAllButton = new("Apply to all pictures", ButtonKind.Secondary, 200);
@@ -94,20 +117,24 @@ sealed partial class MainForm
         _applyAllButton.Margin = new Padding(0, 14, 0, 0);
         _applyAllButton.Click += (_, _) => ApplyToAll();
 
-        var main = new Control[] { presetTitle, presetRow, _presetNote, _mode, _modeNote, _detail, _threshold, _autoThreshold, _colors, _smoothness };
+        var main = new Control[] { presetTitle, presetRow, _presetNote };
+        var bin = new Control[] { _binOn, _usePaper, _paperSize, _gridX, _gridY, _heightUnits, _clearance, _pocketDepth, _fingerHoles, _fingerSize, _lip, _magnets, _maxGrid };
+        var trace = new Control[] { _mode, _modeNote, _detail, _threshold, _autoThreshold, _colors, _smoothness };
         var prepare = new Control[] { _blur, _smoothTexture, _despeckle, _contrast, _localContrast, _brightness, _invert, _isolate };
         var clean = new Control[] { _closeGaps, _fillHoles, _keepLargest, _aiEdges, _aiLineArt };
-        var output = new Control[] { _curves, _corners, _snapCircles, _strokes, _strokeWidth, _size, _offset, _units, _resolution, _formatDxf, _formatSvg, _formatPdf, _useGpu };
+        var output = new Control[] { _curves, _corners, _snapCircles, _strokes, _strokeWidth, _size, _offset, _units, _resolution, _formatStl, _format3mf, _formatDxf, _formatSvg, _formatPdf, _useGpu };
 
         _settingsStack.SuspendLayout();
         foreach (var c in main) _settingsStack.Controls.Add(c);
+        AddSection(_binHeader, bin);
+        AddSection(_traceHeader, trace);
         AddSection(_prepareHeader, prepare);
         AddSection(_cleanHeader, clean);
         AddSection(_outputHeader, output);
         _settingsStack.Controls.Add(_applyAllButton);
         _settingsStack.ResumeLayout(true);
 
-        foreach (var header in new[] { _prepareHeader, _cleanHeader, _outputHeader })
+        foreach (var header in new[] { _binHeader, _traceHeader, _prepareHeader, _cleanHeader, _outputHeader })
         {
             header.Expanded = !_config.CollapsedSections.Contains(header.Text);
             header.IsRelevant = IsRelevant;
@@ -120,16 +147,18 @@ sealed partial class MainForm
         }
 
         // Every control feeds the same handler; it rebuilds settings from the UI.
-        foreach (var slider in new[] { _detail, _threshold, _colors, _smoothness, _blur, _smoothTexture, _despeckle, _contrast, _localContrast, _brightness, _closeGaps, _corners, _strokeWidth })
+        foreach (var slider in new[] { _detail, _threshold, _colors, _smoothness, _blur, _smoothTexture, _despeckle, _contrast, _localContrast, _brightness, _closeGaps, _corners, _strokeWidth, _clearance, _pocketDepth, _fingerSize })
             slider.ValueChanged += (_, _) => OnUiChanged();
-        foreach (var toggle in new[] { _autoThreshold, _invert, _isolate, _fillHoles, _keepLargest, _aiEdges, _aiLineArt, _snapCircles })
+        foreach (var toggle in new[] { _autoThreshold, _invert, _isolate, _fillHoles, _keepLargest, _aiEdges, _aiLineArt, _snapCircles, _binOn, _usePaper, _fingerHoles, _lip, _magnets })
             toggle.CheckedChanged += (_, _) => OnUiChanged();
         foreach (var seg in new[] { _mode, _curves, _strokes, _units })
             seg.SelectedIndexChanged += (_, _) => OnUiChanged();
         _size.Box.ValueChanged += (_, _) => OnUiChanged();
         _offset.Box.ValueChanged += (_, _) => OnUiChanged();
         _resolution.Box.SelectedIndexChanged += (_, _) => OnUiChanged();
-        foreach (var format in new[] { _formatDxf, _formatSvg, _formatPdf })
+        foreach (var dropdown in new[] { _paperSize, _gridX, _gridY, _heightUnits, _maxGrid })
+            dropdown.Box.SelectedIndexChanged += (_, _) => OnUiChanged();
+        foreach (var format in new[] { _formatStl, _format3mf, _formatDxf, _formatSvg, _formatPdf })
             format.CheckedChanged += (_, _) => OnFormatsChanged(format);
         _useGpu.Checked = _config.UseGpu;
         _useGpu.CheckedChanged += (_, _) =>
@@ -177,6 +206,12 @@ sealed partial class MainForm
         if (c == _strokeWidth) return strokes && _strokes.SelectedIndex == 1;
         if (c == _offset) return !strokes;
         if (c == _snapCircles) return true;
+        var binOn = _binOn.Checked;
+        if (c == _gridX || c == _gridY || c == _heightUnits || c == _clearance || c == _pocketDepth || c == _fingerHoles || c == _lip || c == _magnets || c == _maxGrid) return binOn;
+        if (c == _fingerSize) return binOn && _fingerHoles.Checked;
+        if (c == _paperSize) return _usePaper.Checked;
+        if (c == _size) return !_usePaper.Checked;
+        if (c == _formatStl || c == _format3mf) return binOn;
         return true;
     }
 
@@ -186,7 +221,7 @@ sealed partial class MainForm
         var mode = (TraceMode)_mode.SelectedIndex;
         _autoThreshold.Visible = mode == TraceMode.Shapes;
         _colors.Visible = mode == TraceMode.Shapes;
-        foreach (var header in new[] { _prepareHeader, _cleanHeader, _outputHeader }) header.ApplyVisibility();
+        foreach (var header in new[] { _binHeader, _traceHeader, _prepareHeader, _cleanHeader, _outputHeader }) header.ApplyVisibility();
         _threshold.Label = mode switch
         {
             TraceMode.Silhouette => "Tightness",
@@ -255,6 +290,21 @@ sealed partial class MainForm
             _units.SelectedIndex = (int)s.Units;
             var res = Array.FindIndex(Resolutions, r => r >= s.WorkingSize);
             _resolution.Box.SelectedIndex = res < 0 ? Resolutions.Length - 1 : res;
+            _binOn.Checked = s.Bin.Enabled;
+            _usePaper.Checked = s.UsePaper;
+            _paperSize.Box.SelectedIndex = (int)s.Paper;
+            _gridX.Box.SelectedIndex = Math.Clamp(s.Bin.GridX, 0, 10);
+            _gridY.Box.SelectedIndex = Math.Clamp(s.Bin.GridY, 0, 10);
+            _heightUnits.Box.SelectedIndex = s.Bin.HeightUnits < 2 ? 0 : Math.Clamp(s.Bin.HeightUnits - 1, 1, 19);
+            _clearance.Value = s.Bin.Clearance;
+            _pocketDepth.Value = s.Bin.Depth;
+            _fingerHoles.Checked = s.Bin.FingerHoles;
+            _fingerSize.Value = s.Bin.FingerHoleSize;
+            _lip.Checked = s.Bin.StackingLip;
+            _magnets.Checked = s.Bin.Magnets;
+            _maxGrid.Box.SelectedIndex = Math.Clamp(s.Bin.MaxGrid - 3, 0, 5);
+            _formatStl.Checked = _config.Formats.Contains(ExportFormat.Stl);
+            _format3mf.Checked = _config.Formats.Contains(ExportFormat.ThreeMf);
             _formatDxf.Checked = _config.Formats.Contains(ExportFormat.Dxf);
             _formatSvg.Checked = _config.Formats.Contains(ExportFormat.Svg);
             _formatPdf.Checked = _config.Formats.Contains(ExportFormat.Pdf);
@@ -303,6 +353,24 @@ sealed partial class MainForm
         s.Offset = (double)_offset.Box.Value;
         s.Units = (OutputUnits)_units.SelectedIndex;
         s.WorkingSize = Resolutions[Math.Max(0, _resolution.Box.SelectedIndex)];
+        s.UsePaper = _usePaper.Checked;
+        s.Paper = (PaperSize)Math.Max(0, _paperSize.Box.SelectedIndex);
+        s.Bin = new BinSettings
+        {
+            Enabled = _binOn.Checked,
+            GridX = Math.Max(0, _gridX.Box.SelectedIndex),
+            GridY = Math.Max(0, _gridY.Box.SelectedIndex),
+            HeightUnits = _heightUnits.Box.SelectedIndex <= 0 ? 0 : _heightUnits.Box.SelectedIndex + 1,
+            Clearance = _clearance.Value,
+            Depth = _pocketDepth.Value,
+            Spacing = _template.Bin.Spacing,
+            FingerHoles = _fingerHoles.Checked,
+            FingerHoleSize = _fingerSize.Value,
+            StackingLip = _lip.Checked,
+            Magnets = _magnets.Checked,
+            MaxGrid = Math.Max(0, _maxGrid.Box.SelectedIndex) + 3,
+            LabelDepth = _template.Bin.LabelDepth
+        };
         return s.WithoutEdits().Normalized();
     }
 
@@ -382,6 +450,8 @@ sealed partial class MainForm
     {
         if (_loading) return;
         var formats = new List<ExportFormat>();
+        if (_formatStl.Checked) formats.Add(ExportFormat.Stl);
+        if (_format3mf.Checked) formats.Add(ExportFormat.ThreeMf);
         if (_formatDxf.Checked) formats.Add(ExportFormat.Dxf);
         if (_formatSvg.Checked) formats.Add(ExportFormat.Svg);
         if (_formatPdf.Checked) formats.Add(ExportFormat.Pdf);

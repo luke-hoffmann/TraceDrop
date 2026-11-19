@@ -1,5 +1,6 @@
 using Tracedrop.Core;
 using Tracedrop.Core.Editing;
+using Tracedrop.Core.Gridfinity;
 using Tracedrop.Core.Vector;
 
 namespace TracedropApp;
@@ -30,23 +31,36 @@ sealed class EditState
     public List<GuideRegion> Regions { get; init; } = new();
     public List<ManualPath> Manual { get; init; } = new();
     public List<PickPoint> Picks { get; init; } = new();
+    /// <summary>The sheet's corners set by hand (empty = found automatically).</summary>
+    public List<NormPoint> PaperCorners { get; init; } = new();
+    /// <summary>Where the tools sit in the bin, finger holes, labels (empty = arranged automatically).</summary>
+    public BinLayout Layout { get; init; } = new();
 
     public static readonly EditState Empty = new();
 
-    public bool IsEmpty => Regions.Count == 0 && Manual.Count == 0 && Picks.Count == 0;
+    public bool IsEmpty => Regions.Count == 0 && Manual.Count == 0 && Picks.Count == 0 && PaperCorners.Count == 0 && Layout.IsEmpty;
 
     public EditState Copy() => new()
     {
         Regions = Regions.Select(r => r.Copy()).ToList(),
         Manual = Manual.Select(m => m.Copy()).ToList(),
-        Picks = Picks.ToList()
+        Picks = Picks.ToList(),
+        PaperCorners = PaperCorners.ToList(),
+        Layout = Layout.Clone()
     };
+
+    /// <summary>A copy with another bin layout (everything else shared by reference: treat both as read-only).</summary>
+    public EditState WithLayout(BinLayout layout) => new() { Regions = Regions, Manual = Manual, Picks = Picks, PaperCorners = PaperCorners, Layout = layout };
+
+    public EditState WithPaperCorners(List<NormPoint> corners) => new() { Regions = Regions, Manual = Manual, Picks = Picks, PaperCorners = corners, Layout = Layout };
 
     public static EditState From(TraceSettings s) => new()
     {
         Regions = s.Regions.Select(r => r.Copy()).ToList(),
         Manual = s.Manual.Select(m => m.Copy()).ToList(),
-        Picks = s.Picks.ToList()
+        Picks = s.Picks.ToList(),
+        PaperCorners = s.PaperCorners.ToList(),
+        Layout = s.Layout.Clone()
     };
 
     public void ApplyTo(TraceSettings s)
@@ -54,12 +68,15 @@ sealed class EditState
         s.Regions = Regions.Select(r => r.Copy()).ToList();
         s.Manual = Manual.Select(m => m.Copy()).ToList();
         s.Picks = Picks.ToList();
+        s.PaperCorners = PaperCorners.ToList();
+        s.Layout = Layout.Clone();
     }
 
     public string Key() =>
         string.Join("/", Regions.Select(r => r.Key())) + "|" + Manual.Count + ":" +
         string.Join(";", Manual.SelectMany(m => m.Nodes).Select(n => $"{n.Point.X:0.#####},{n.Point.Y:0.#####},{n.In?.X:0.#####},{n.Out?.X:0.#####}")) + "|" +
-        string.Join(";", Picks.Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Kind}"));
+        string.Join(";", Picks.Select(p => $"{p.X:0.####},{p.Y:0.####},{p.Kind}")) + "|" +
+        string.Join(";", PaperCorners.Select(p => $"{p.X:0.#####},{p.Y:0.#####}")) + "|" + Layout.Key();
 }
 
 /// <summary>Undo and redo for one picture's edits.</summary>

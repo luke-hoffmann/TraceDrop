@@ -233,7 +233,7 @@ sealed partial class MainForm
             RedoEdit();
             e.Handled = e.SuppressKeyPress = true;
         }
-        else if (!e.Control && !e.Alt && !TypingInBox() && _items.Count > 0 && ToolForKey(e.KeyCode) is { } tool)
+        else if (!e.Control && !e.Alt && !TypingInBox() && _items.Count > 0 && CurrentView is PaneView.Trace or PaneView.Lines && ToolForKey(e.KeyCode) is { } tool)
         {
             _preview.Tool = tool;
             _palette.Selected = tool;
@@ -333,6 +333,10 @@ sealed partial class MainForm
         if (item is null)
         {
             _preview.Clear();
+            _binView.SetDesign(null);
+            _view3d.SetMesh(null);
+            _paperView.SetPhoto(null);
+            _paperView.SetCorners(null);
             _statsLabel.Text = "";
             UpdateEditorBar();
             UpdateDragChip();
@@ -349,6 +353,7 @@ sealed partial class MainForm
         _statsLabel.Text = item.Error ?? Stats(item);
         _preview.EmptyTitle = item.Error is null ? "Drop pictures here" : "Couldn't trace this picture";
         _preview.EmptyBody = item.Error ?? "PNG, JPEG, HEIC, WebP, TIFF and more. Or paste with Ctrl+V.";
+        ShowBin(item);
         UpdateEditorBar();
         UpdateDragChip();
     }
@@ -368,8 +373,17 @@ sealed partial class MainForm
             $"{Format.Size(units.Width, r.Settings.Units)} × {Format.Size(units.Height, r.Settings.Units)}",
             Format.Duration(r.Elapsed)
         };
+        if (item.Design is { } bin)
+        {
+            parts.Clear();
+            parts.Add($"{bin.GridX} × {bin.GridY} bin, {bin.HeightUnits} units high");
+            parts.Add(Count(bin.Tools.Count, "tool") + (bin.LeftOut.Count > 0 ? $" ({bin.LeftOut.Count} left out)" : ""));
+            if (r.MillimetresPerPixel > 0) parts.Add($"{Tracedrop.Core.Paper.Papers.Name(r.PaperSize)} for scale");
+            parts.Add(Format.Duration(r.Elapsed));
+        }
+        var notes = (item.Design?.Notes ?? new List<string>()).Concat(r.Notes).ToList();
         var text = string.Join("  ·  ", parts);
-        if (r.Notes.Count > 0) text += "  ·  " + r.Notes[0];
+        if (notes.Count > 0) text += "  ·  " + notes[0];
         return text;
     }
 
@@ -431,7 +445,7 @@ sealed partial class MainForm
         _listHint.Visible = _items.Count > 0;
         _optionsBar.Visible = _items.Count > 0;
         _toolHint.Visible = _items.Count > 0;
-        _palette.Visible = _items.Count > 0;
+        _palette.Visible = _items.Count > 0 && CurrentView is PaneView.Trace or PaneView.Lines;
         if (_items.Count == 0) ShowItem(null);
         Text = _items.Count > 0 ? $"Tracedrop ({_items.Count})" : "Tracedrop";
         UpdateActionStates();
@@ -474,10 +488,11 @@ sealed partial class MainForm
             if (u.Photo is not null) { item.Photo?.Dispose(); item.Photo = u.Photo; }
             if (u.Prepared is not null) { item.Prepared?.Dispose(); item.Prepared = u.Prepared; }
             if (u.Detected is not null) { item.Detected?.Dispose(); item.Detected = u.Detected; }
+            if (u.Source is not null) { item.Source?.Dispose(); item.Source = u.Source; }
         }
         else
         {
-            u.Photo?.Dispose(); u.Prepared?.Dispose(); u.Detected?.Dispose();
+            u.Photo?.Dispose(); u.Prepared?.Dispose(); u.Detected?.Dispose(); u.Source?.Dispose();
         }
 
         if (u.Error is not null)
@@ -487,6 +502,8 @@ sealed partial class MainForm
         }
         else if (u.Result is not null)
         {
+            item.Design = u.Design;
+            item.Mesh = u.Mesh;
             item.Result = u.Result;
             item.Error = null;
             item.State = item.Version == u.Version ? ItemState.Done : ItemState.Tracing;
@@ -578,7 +595,9 @@ sealed partial class MainForm
             var units = item.Result.InUnits();
             var shapes = d.OpenCount >= d.ClosedCount && d.OpenCount > 0 ? Count(d.OpenCount, "line") : Count(d.ClosedCount, "shape");
             var formats = string.Join(" ", item.Outputs.Keys.OrderBy(k => k).Select(k => Exporters.Extension(k).TrimStart('.').ToUpperInvariant()));
-            status = $"{formats}  ·  {shapes}  ·  {Format.Size(Math.Max(units.Width, units.Height), item.Result.Settings.Units)}";
+            status = item.Design is { } bin
+                ? $"{formats}  ·  {bin.GridX} × {bin.GridY} bin  ·  {Count(bin.Tools.Count, "tool")}"
+                : $"{formats}  ·  {shapes}  ·  {Format.Size(Math.Max(units.Width, units.Height), item.Result.Settings.Units)}";
         }
         TextRenderer.DrawText(g, status, UiFonts.Small, new Rectangle(textLeft, row.Top + this.Px(32), textWidth, this.Px(18)), statusColor, flags);
     }

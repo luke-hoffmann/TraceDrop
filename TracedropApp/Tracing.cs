@@ -5,6 +5,7 @@ using OpenCvSharp;
 using Tracedrop.Core;
 using Tracedrop.Core.Ai;
 using Tracedrop.Core.Export;
+using Tracedrop.Core.Gridfinity;
 using Tracedrop.Core.Imaging;
 
 namespace TracedropApp;
@@ -49,6 +50,10 @@ sealed class TraceItem : IDisposable
     /// <summary>When the job was last used, for least-recently-used eviction.</summary>
     public long LastUsed;
     public string ExportedFormats = "";
+    /// <summary>What the bin was last built from (worker-owned), so an unchanged trace doesn't rebuild it.</summary>
+    public string? BinKey;
+    public BinDesign? WorkerDesign;
+    public Mesh? WorkerMesh;
 
     // UI-owned results.
     public ItemState State = ItemState.Waiting;
@@ -58,6 +63,11 @@ sealed class TraceItem : IDisposable
     public Bitmap? Photo;
     public Bitmap? Prepared;
     public Bitmap? Detected;
+    /// <summary>The photo as taken (not straightened), for setting the sheet's corners.</summary>
+    public Bitmap? Source;
+    /// <summary>The bin built from this picture's tools, and its mesh (null when Make a bin is off).</summary>
+    public BinDesign? Design;
+    public Mesh? Mesh;
     public readonly Dictionary<ExportFormat, string> Outputs = new();
     public bool Removed;
 
@@ -66,6 +76,7 @@ sealed class TraceItem : IDisposable
         Photo?.Dispose(); Photo = null;
         Prepared?.Dispose(); Prepared = null;
         Detected?.Dispose(); Detected = null;
+        Source?.Dispose(); Source = null;
     }
 
     public void Dispose()
@@ -87,7 +98,10 @@ sealed record TraceUpdate(
     Bitmap? Prepared,
     Bitmap? Detected,
     IReadOnlyDictionary<ExportFormat, string>? Outputs,
-    bool Started = false);
+    bool Started = false,
+    BinDesign? Design = null,
+    Mesh? Mesh = null,
+    Bitmap? Source = null);
 
 /// <summary>
 /// Single background thread that traces pictures one at a time: the selected picture first (live preview),
@@ -231,15 +245,17 @@ sealed class TraceWorker : IDisposable
             }
             var result = item.Job.Run(settings, cancel.Token);
             if (item.Thumbnail is null && item.DoneVersion < 0) thumbnail = Thumb(item.Job.Working!);
+            BuildBin(item, result, cancel.Token);
             var outputs = previewOnly && item.ExportedFormats == FormatKey(_formats()) ? null : ExportFiles(item, result);
 
-            Bitmap? photo = null, prepared = null, detected = null;
+            Bitmap? photo = null, prepared = null, detected = null, source = null;
             if (ReferenceEquals(item, _selected))
             {
                 var working = item.Job.Working!;
                 if (item.PhotoVisit != visit || item.PhotoSize != working.Size())
                 {
                     photo = ToBitmap(working);
+                    if (item.Job.SourcePreview is { } original) source = ToBitmap(original);
                     item.PhotoVisit = visit;
                     item.PhotoSize = working.Size();
                 }
@@ -250,7 +266,8 @@ sealed class TraceWorker : IDisposable
                 item.PreviewVisit = visit;
             }
             item.DoneVersion = version;
-            _post(new TraceUpdate(item, version, result, null, thumbnail, photo, prepared, detected, outputs));
+            _post(new TraceUpdate(item, version, result, null, thumbnail, photo, prepared, detected, outputs,
+                Design: item.WorkerDesign, Mesh: item.WorkerMesh, Source: source));
         }
         catch (OperationCanceledException)
         {
@@ -292,15 +309,52 @@ sealed class TraceWorker : IDisposable
         return firstLine.Length > 160 ? firstLine[..157] + "…" : firstLine;
     }
 
+    /// <summary>
+    /// Make a bin on: the traced tools (in mm) are placed into a Gridfinity bin and meshed. Rebuilt only when the
+    /// trace, the bin settings or the layout changed.
+    /// </summary>
+    static void BuildBin(TraceItem item, TraceResult result, CancellationToken cancel)
+    {
+        var s = result.Settings;
+        if (!s.Bin.Enabled)
+        {
+            item.BinKey = null;
+            item.WorkerDesign = null;
+            item.WorkerMesh = null;
+            return;
+        }
+        var mmPerPixel = result.MillimetresPerPixel > 0
+            ? result.MillimetresPerPixel
+            : result.UnitsPerPixel * (s.Units == OutputUnits.Inches ? 25.4 : 1);
+        var key = $"{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(result.Drawing)}|{mmPerPixel:R}|" +
+                  System.Text.Json.JsonSerializer.Serialize(s.Bin) + "|" + s.Layout.Key();
+        if (key == item.BinKey && item.WorkerMesh is not null) return;
+        var tools = Designer.ExtractTools(result.Drawing, mmPerPixel);
+        var design = Designer.Design(tools, s.Bin, s.Layout);
+        var mesh = BinMesh.Build(design, cancel);
+        if (mesh.BadEdges() > 0) design.Notes.Add("The bin's mesh has small gaps: most slicers repair them, but please check it.");
+        item.WorkerDesign = design;
+        item.WorkerMesh = mesh;
+        item.BinKey = key;
+    }
+
     Dictionary<ExportFormat, string> ExportFiles(TraceItem item, TraceResult result)
     {
         var formats = _formats();
         var outputs = new Dictionary<ExportFormat, string>();
-        var inUnits = result.InUnits();
+        var design = item.WorkerDesign;
+        // With a bin, the flat formats are its top-view layout (foam, laser); without one, the traced drawing.
+        var inUnits = design is not null ? BinExport.Layout(design) : result.InUnits();
+        var units = design is not null ? OutputUnits.Millimeters : result.Settings.Units;
         foreach (var format in formats)
         {
             var path = Path.Combine(_outputFolder, item.Stem + Exporters.Extension(format));
-            Exporters.WriteFile(inUnits, result.Settings.Units, format, path);
+            if (Exporters.IsMesh(format))
+            {
+                if (item.WorkerMesh is null) continue;
+                BinExport.WriteMeshFile(item.WorkerMesh, format, path, item.Stem);
+            }
+            else Exporters.WriteFile(inUnits, units, format, path);
             outputs[format] = path;
         }
         foreach (var format in Enum.GetValues<ExportFormat>().Except(formats))
@@ -317,7 +371,7 @@ sealed class TraceWorker : IDisposable
         try
         {
             var outputs = ExportFiles(item, result);
-            _post(new TraceUpdate(item, item.DoneVersion, result, null, null, null, null, null, outputs));
+            _post(new TraceUpdate(item, item.DoneVersion, result, null, null, null, null, null, outputs, Design: item.WorkerDesign, Mesh: item.WorkerMesh));
         }
         catch (Exception ex)
         {

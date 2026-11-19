@@ -4,6 +4,7 @@ using OpenCvSharp;
 using Tracedrop.Core;
 using Tracedrop.Core.Ai;
 using Tracedrop.Core.Editing;
+using Tracedrop.Core.Gridfinity;
 using Tracedrop.Core.Export;
 using Tracedrop.Core.Imaging;
 using Tracedrop.Core.Vector;
@@ -20,6 +21,7 @@ var regions = new List<GuideRegion>();
 var outDir = Directory.GetCurrentDirectory();
 var formats = new List<ExportFormat> { ExportFormat.Dxf, ExportFormat.Svg };
 var render = false;
+var bin = false;
 string? modelDir = null;
 var cpu = false;
 
@@ -62,6 +64,7 @@ for (var i = 0; i < args.Length; i++)
                 .Select(f => Enum.Parse<ExportFormat>(f.Trim(), ignoreCase: true)).ToList();
             break;
         case "--render": render = true; break;
+        case "--bin": bin = true; break;
         case "--models": modelDir = args[++i]; break;
         case "--cpu": cpu = true; break;
         case "--bench-edges":
@@ -85,7 +88,7 @@ for (var i = 0; i < args.Length; i++)
             return 0;
         case "-h":
         case "--help":
-            Console.WriteLine("tracedrop-cli <image>... [--preset NAME] [--set Key=Value]... [--pick keep|remove,X,Y]... [--find X,Y,R[,AMOUNT]]... [--erase X,Y,R]... [--out DIR] [--formats dxf,svg,pdf] [--render] [--models DIR] [--cpu] [--list-presets]");
+            Console.WriteLine("tracedrop-cli <image>... [--preset NAME] [--set Key=Value]... [--pick keep|remove,X,Y]... [--find X,Y,R[,AMOUNT]]... [--erase X,Y,R]... [--out DIR] [--formats dxf,svg,pdf] [--render] [--bin] [--models DIR] [--cpu] [--list-presets]");
             return 0;
         default: inputs.Add(args[i]); break;
     }
@@ -132,6 +135,24 @@ foreach (var input in inputs)
                           $"({result.Drawing.ClosedCount} closed, {result.Drawing.OpenCount} open) in {result.Elapsed.TotalMilliseconds:0} ms" +
                           (models.Device is { } d ? $" on {d}" : ""));
         foreach (var note in result.Notes) Console.WriteLine("  note: " + note);
+        if (bin)
+        {
+            // Gridfinity: the bin as STL + 3MF, its top-view layout as DXF, and a rendered preview.
+            var mmPerPixel = result.MillimetresPerPixel > 0 ? result.MillimetresPerPixel : result.UnitsPerPixel * (result.Settings.Units == OutputUnits.Inches ? 25.4 : 1);
+            var tools = Designer.ExtractTools(result.Drawing, mmPerPixel);
+            var design = Designer.Design(tools, result.Settings.Bin, result.Settings.Layout);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var mesh = BinMesh.Build(design);
+            Console.WriteLine($"  bin: {design.GridX}x{design.GridY}x{design.HeightUnits}u, {design.Tools.Count} tools, {mesh.TriangleCount} triangles, " +
+                              $"open edges {mesh.BadEdges()}, built in {sw.ElapsedMilliseconds} ms");
+            foreach (var t in tools) Console.WriteLine($"    {t.Name}: {t.Width:0.0} x {t.Height:0.0} mm");
+            foreach (var note in design.Notes) Console.WriteLine("  note: " + note);
+            BinExport.WriteMeshFile(mesh, ExportFormat.Stl, Path.Combine(outDir, stem + ".stl"));
+            BinExport.WriteMeshFile(mesh, ExportFormat.ThreeMf, Path.Combine(outDir, stem + ".3mf"));
+            Exporters.WriteFile(BinExport.Layout(design), OutputUnits.Millimeters, ExportFormat.Dxf, Path.Combine(outDir, stem + ".layout.dxf"));
+            using var picture = MeshRenderer.Render(mesh, 1200, 900);
+            Cv2.ImWrite(Path.Combine(outDir, stem + ".bin.png"), picture);
+        }
         Console.WriteLine("  stages: " + string.Join(", ", result.StageMs.Select(kv => $"{kv.Key} {kv.Value:0}ms")));
     }
     catch (Exception ex)
